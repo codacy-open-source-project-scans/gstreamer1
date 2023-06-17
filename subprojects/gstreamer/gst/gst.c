@@ -119,6 +119,10 @@
 #endif
 #endif
 
+#ifdef GST_FULL_COMPILATION
+void gst_init_static_plugins ();
+#endif
+
 #include <glib/gi18n-lib.h>
 #include <locale.h>             /* for LC_ALL */
 
@@ -209,8 +213,11 @@ BOOL WINAPI DllMain (HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved);
 BOOL WINAPI
 DllMain (HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 {
-  if (fdwReason == DLL_PROCESS_ATTACH)
+  if (fdwReason == DLL_PROCESS_ATTACH) {
     _priv_gst_dll_handle = (HMODULE) hinstDLL;
+    priv_gst_clock_init ();
+  }
+
   return TRUE;
 }
 
@@ -621,6 +628,9 @@ gst_register_core_elements (GstPlugin * plugin)
 static void
 init_static_plugins (void)
 {
+#ifdef GST_FULL_COMPILATION
+  gst_init_static_plugins ();
+#else
   GModule *module;
 
   /* Call gst_init_static_plugins() defined in libgstreamer-full-1.0 in the case
@@ -634,6 +644,7 @@ init_static_plugins (void)
     }
     g_module_close (module);
   }
+#endif
 }
 
 /*

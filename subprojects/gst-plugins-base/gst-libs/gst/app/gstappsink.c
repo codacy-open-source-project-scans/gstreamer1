@@ -405,7 +405,7 @@ gst_app_sink_class_init (GstAppSinkClass * klass)
    * This function blocks until a preroll sample or EOS is received or the appsink
    * element is set to the READY/NULL state.
    *
-   * Returns: (nullable): a #GstSample or NULL when the appsink is stopped or EOS.
+   * Returns: (nullable) (transfer full): a #GstSample or %NULL when the appsink is stopped or EOS.
    */
   gst_app_sink_signals[SIGNAL_PULL_PREROLL] =
       g_signal_new ("pull-preroll", G_TYPE_FROM_CLASS (klass),
@@ -430,7 +430,7 @@ gst_app_sink_class_init (GstAppSinkClass * klass)
    * If an EOS event was received before any buffers, this function returns
    * %NULL. Use gst_app_sink_is_eos () to check for the EOS condition.
    *
-   * Returns: (nullable): a #GstSample or NULL when the appsink is stopped or EOS.
+   * Returns: (nullable) (transfer full): a #GstSample or %NULL when the appsink is stopped or EOS.
    */
   gst_app_sink_signals[SIGNAL_PULL_SAMPLE] =
       g_signal_new ("pull-sample", G_TYPE_FROM_CLASS (klass),
@@ -462,7 +462,8 @@ gst_app_sink_class_init (GstAppSinkClass * klass)
    * This function blocks until a preroll sample or EOS is received, the appsink
    * element is set to the READY/NULL state, or the timeout expires.
    *
-   * Returns: (nullable): a #GstSample or NULL when the appsink is stopped or EOS or the timeout expires.
+   * Returns: (nullable) (transfer full): a #GstSample or %NULL when the appsink
+   * is stopped or EOS or the timeout expires.
    *
    * Since: 1.10
    */
@@ -795,6 +796,11 @@ gst_app_sink_stop (GstBaseSink * psink)
   gst_caps_replace (&priv->last_caps, NULL);
   gst_segment_init (&priv->preroll_segment, GST_FORMAT_UNDEFINED);
   gst_segment_init (&priv->last_segment, GST_FORMAT_UNDEFINED);
+  priv->sample = gst_sample_make_writable (priv->sample);
+  gst_sample_set_buffer (priv->sample, NULL);
+  gst_sample_set_buffer_list (priv->sample, NULL);
+  gst_sample_set_caps (priv->sample, NULL);
+  gst_sample_set_segment (priv->sample, NULL);
   g_mutex_unlock (&priv->mutex);
 
   return TRUE;

@@ -1835,10 +1835,12 @@ gst_ffmpegviddec_video_frame (GstFFMpegVidDec * ffmpegdec,
       out_frame->pts, out_frame->duration);
   GST_DEBUG_OBJECT (ffmpegdec, "picture: pts %" G_GUINT64_FORMAT,
       (guint64) ffmpegdec->picture->pts);
+#if LIBAVUTIL_VERSION_MAJOR < 58
   GST_DEBUG_OBJECT (ffmpegdec, "picture: num %d",
       ffmpegdec->picture->coded_picture_number);
   GST_DEBUG_OBJECT (ffmpegdec, "picture: display %d",
       ffmpegdec->picture->display_picture_number);
+#endif
   GST_DEBUG_OBJECT (ffmpegdec, "picture: opaque %p",
       ffmpegdec->picture->opaque);
   GST_DEBUG_OBJECT (ffmpegdec, "picture: reordered opaque %" G_GUINT64_FORMAT,
@@ -2017,7 +2019,11 @@ gst_ffmpegviddec_frame (GstFFMpegVidDec * ffmpegdec, GstVideoCodecFrame * frame,
     goto no_codec;
 
   *ret = GST_FLOW_OK;
+#if LIBAVCODEC_VERSION_MAJOR >= 60
+  ffmpegdec->context->frame_num++;
+#else
   ffmpegdec->context->frame_number++;
+#endif
 
   got_frame = gst_ffmpegviddec_video_frame (ffmpegdec, frame, ret);
 

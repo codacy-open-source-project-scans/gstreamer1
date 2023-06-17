@@ -204,6 +204,13 @@ typedef struct _DecodebinInputStream DecodebinInputStream;
 typedef struct _DecodebinInput DecodebinInput;
 typedef struct _DecodebinOutputStream DecodebinOutputStream;
 
+typedef struct
+{
+  GstElement *element;
+  GstMessage *error;            // Last error message seen for that element
+  GstMessage *latency;          // Last latency message seen for that element
+} CandidateDecoder;
+
 struct _GstDecodebin3
 {
   GstBin bin;
@@ -264,6 +271,8 @@ struct _GstDecodebin3
 
   /* Properties */
   GstCaps *caps;
+
+  GList *candidate_decoders;
 };
 
 struct _GstDecodebin3Class
@@ -850,6 +859,97 @@ parsebin_drained_cb (GstElement * parsebin, DecodebinInput * input)
     g_signal_emit (dbin, gst_decodebin3_signals[SIGNAL_ABOUT_TO_FINISH], 0,
         NULL);
   }
+}
+
+static gboolean
+clear_sticky_events (GstPad * pad, GstEvent ** event, gpointer user_data)
+{
+  GST_DEBUG_OBJECT (pad, "clearing sticky event %" GST_PTR_FORMAT, *event);
+  gst_event_unref (*event);
+  *event = NULL;
+  return TRUE;
+}
+
+static gboolean
+copy_sticky_events (GstPad * pad, GstEvent ** event, gpointer user_data)
+{
+  GstPad *gpad = GST_PAD_CAST (user_data);
+
+  GST_DEBUG_OBJECT (gpad, "store sticky event %" GST_PTR_FORMAT, *event);
+  gst_pad_store_sticky_event (gpad, *event);
+
+  return TRUE;
+}
+
+static gboolean
+decode_pad_set_target (GstGhostPad * pad, GstPad * target)
+{
+  gboolean res = gst_ghost_pad_set_target (pad, target);
+  if (!res)
+    return res;
+
+  if (target == NULL)
+    gst_pad_sticky_events_foreach (GST_PAD_CAST (pad), clear_sticky_events,
+        NULL);
+  else
+    gst_pad_sticky_events_foreach (target, copy_sticky_events, pad);
+
+  return res;
+}
+
+typedef struct
+{
+  gboolean ret;
+  GstPad *peer;
+} SendStickyEventsData;
+
+static gboolean
+send_sticky_event (GstPad * pad, GstEvent ** event, gpointer user_data)
+{
+  SendStickyEventsData *data = user_data;
+
+  data->ret &= gst_pad_send_event (data->peer, gst_event_ref (*event));
+
+  return data->ret;
+}
+
+static gboolean
+send_sticky_events (GstDecodebin3 * dbin, GstPad * pad)
+{
+  SendStickyEventsData data;
+
+  data.ret = TRUE;
+  data.peer = gst_pad_get_peer (pad);
+
+  gst_pad_sticky_events_foreach (pad, send_sticky_event, &data);
+
+  gst_object_unref (data.peer);
+
+  return data.ret;
+}
+
+static CandidateDecoder *
+add_candidate_decoder (GstDecodebin3 * dbin, GstElement * element)
+{
+  GST_OBJECT_LOCK (dbin);
+  CandidateDecoder *candidate;
+  candidate = g_new0 (CandidateDecoder, 1);
+  candidate->element = element;
+  dbin->candidate_decoders =
+      g_list_prepend (dbin->candidate_decoders, candidate);
+  GST_OBJECT_UNLOCK (dbin);
+  return candidate;
+}
+
+static void
+remove_candidate_decoder (GstDecodebin3 * dbin, CandidateDecoder * candidate)
+{
+  GST_OBJECT_LOCK (dbin);
+  dbin->candidate_decoders =
+      g_list_remove (dbin->candidate_decoders, candidate);
+  if (candidate->error)
+    gst_message_unref (candidate->error);
+  GST_OBJECT_UNLOCK (dbin);
 }
 
 /* Call with INPUT_LOCK taken */
@@ -1979,8 +2079,33 @@ gst_decodebin3_handle_message (GstBin * bin, GstMessage * message)
 {
   GstDecodebin3 *dbin = (GstDecodebin3 *) bin;
   gboolean posting_collection = FALSE;
+  GList *l;
 
   GST_DEBUG_OBJECT (bin, "Got Message %s", GST_MESSAGE_TYPE_NAME (message));
+
+  GST_OBJECT_LOCK (dbin);
+  for (l = dbin->candidate_decoders; l; l = l->next) {
+    CandidateDecoder *candidate = l->data;
+    if (GST_OBJECT_CAST (candidate->element) == GST_MESSAGE_SRC (message)) {
+      if (GST_MESSAGE_TYPE (message) == GST_MESSAGE_ERROR) {
+        if (candidate->error)
+          gst_message_unref (candidate->error);
+        candidate->error = message;
+        GST_OBJECT_UNLOCK (dbin);
+        return;
+      } else if (GST_MESSAGE_TYPE (message) == GST_MESSAGE_LATENCY) {
+        if (candidate->latency)
+          gst_message_unref (candidate->latency);
+        GST_DEBUG_OBJECT (bin, "store latency message for %" GST_PTR_FORMAT,
+            candidate->element);
+        candidate->latency = message;
+        GST_OBJECT_UNLOCK (dbin);
+        return;
+      }
+      break;
+    }
+  }
+  GST_OBJECT_UNLOCK (dbin);
 
   switch (GST_MESSAGE_TYPE (message)) {
     case GST_MESSAGE_STREAM_COLLECTION:
@@ -2069,6 +2194,27 @@ drop_message:
   {
     GST_DEBUG_OBJECT (bin, "dropping message");
     gst_message_unref (message);
+  }
+}
+
+static void
+handle_stored_latency_message (GstDecodebin3 * dbin,
+    DecodebinOutputStream * output, CandidateDecoder * candidate)
+{
+  GstClockTime min, max;
+  if (candidate->latency && GST_IS_VIDEO_DECODER (candidate->element)) {
+    gst_video_decoder_get_latency (GST_VIDEO_DECODER (candidate->element),
+        &min, &max);
+    GST_DEBUG_OBJECT (dbin,
+        "Got latency update from %" GST_PTR_FORMAT ". min: %"
+        GST_TIME_FORMAT " max: %" GST_TIME_FORMAT, candidate->element,
+        GST_TIME_ARGS (min), GST_TIME_ARGS (max));
+    output->decoder_latency = min;
+    /* Trigger recalculation */
+    gst_decodebin3_update_min_interleave (dbin);
+
+    GST_BIN_CLASS (parent_class)->handle_message (GST_BIN_CAST (dbin),
+        candidate->latency);
   }
 }
 
@@ -2758,6 +2904,24 @@ keyframe_waiter_probe (GstPad * pad, GstPadProbeInfo * info,
   return GST_PAD_PROBE_DROP;
 }
 
+static void
+remove_decoder_link (DecodebinOutputStream * output, MultiQueueSlot * slot)
+{
+  GstDecodebin3 *dbin = output->dbin;
+
+  gst_pad_unlink (slot->src_pad, output->decoder_sink);
+  if (output->drop_probe_id) {
+    gst_pad_remove_probe (slot->src_pad, output->drop_probe_id);
+    output->drop_probe_id = 0;
+  }
+
+  gst_element_set_locked_state (output->decoder, TRUE);
+  gst_element_set_state (output->decoder, GST_STATE_NULL);
+
+  gst_bin_remove ((GstBin *) dbin, output->decoder);
+  output->decoder = NULL;
+}
+
 /* Returns FALSE if the output couldn't be properly configured and the
  * associated GstStreams should be disabled */
 static gboolean
@@ -2822,7 +2986,7 @@ reconfigure_output_stream (DecodebinOutputStream * output,
       output->drop_probe_id = 0;
     }
 
-    if (!gst_ghost_pad_set_target ((GstGhostPad *) output->src_pad, NULL)) {
+    if (!decode_pad_set_target ((GstGhostPad *) output->src_pad, NULL)) {
       GST_ERROR_OBJECT (dbin, "Could not release decoder pad");
       gst_caps_unref (new_caps);
       goto cleanup;
@@ -2838,7 +3002,7 @@ reconfigure_output_stream (DecodebinOutputStream * output,
     /* Otherwise if we have no decoder yet but the output is linked make
      * sure that the ghost pad is really unlinked in case no decoder was
      * needed previously */
-    if (!gst_ghost_pad_set_target ((GstGhostPad *) output->src_pad, NULL)) {
+    if (!decode_pad_set_target ((GstGhostPad *) output->src_pad, NULL)) {
       GST_ERROR_OBJECT (dbin, "Could not release ghost pad");
       gst_caps_unref (new_caps);
       goto cleanup;
@@ -2853,35 +3017,30 @@ reconfigure_output_stream (DecodebinOutputStream * output,
     GList *factories, *next_factory;
 
     factories = next_factory = create_decoder_factory_list (dbin, new_caps);
-    while (!output->decoder) {
+    if (!next_factory) {
+      GST_DEBUG ("Could not find an element for caps %" GST_PTR_FORMAT,
+          new_caps);
+      g_assert (output->decoder == NULL);
+      ret = FALSE;
+      goto missing_decoder;
+    }
+
+    while (next_factory) {
       gboolean decoder_failed = FALSE;
+      CandidateDecoder *candidate = NULL;
 
       /* If we don't have a decoder yet, instantiate one */
-      if (next_factory) {
-        output->decoder = gst_element_factory_create ((GstElementFactory *)
-            next_factory->data, NULL);
-        GST_DEBUG ("Created decoder %" GST_PTR_FORMAT, output->decoder);
-      } else {
-        GST_DEBUG ("Could not find an element for caps %" GST_PTR_FORMAT,
-            new_caps);
-        g_assert (output->decoder == NULL);
-      }
+      output->decoder = gst_element_factory_create ((GstElementFactory *)
+          next_factory->data, NULL);
+      GST_DEBUG ("Trying decoder %" GST_PTR_FORMAT, output->decoder);
 
-      if (output->decoder == NULL) {
-        GstCaps *caps;
+      if (output->decoder == NULL)
+        goto try_next;
 
-        /* FIXME : Should we be smarter if there's a missing decoder ?
-         * Should we deactivate that stream ? */
-        caps = gst_stream_get_caps (slot->active_stream);
-        *msg = gst_missing_decoder_message_new (GST_ELEMENT_CAST (dbin), caps);
-        gst_caps_unref (caps);
-        ret = FALSE;
-        goto cleanup;
-      }
       if (!gst_bin_add ((GstBin *) dbin, output->decoder)) {
-        GST_ERROR_OBJECT (dbin, "could not add decoder to pipeline");
-        ret = FALSE;
-        goto cleanup;
+        GST_WARNING_OBJECT (dbin, "could not add decoder '%s' to pipeline",
+            GST_ELEMENT_NAME (output->decoder));
+        goto try_next;
       }
       output->decoder_sink =
           gst_element_get_static_pad (output->decoder, "sink");
@@ -2892,40 +3051,76 @@ reconfigure_output_stream (DecodebinOutputStream * output,
             gst_pad_add_probe (slot->src_pad, GST_PAD_PROBE_TYPE_BUFFER,
             (GstPadProbeCallback) keyframe_waiter_probe, output, NULL);
       }
+
+      candidate = add_candidate_decoder (dbin, output->decoder);
       if (gst_pad_link_full (slot->src_pad, output->decoder_sink,
               GST_PAD_LINK_CHECK_NOTHING) != GST_PAD_LINK_OK) {
-        GST_ERROR_OBJECT (dbin, "could not link to %s:%s",
+        GST_WARNING_OBJECT (dbin, "could not link to %s:%s",
             GST_DEBUG_PAD_NAME (output->decoder_sink));
-        ret = FALSE;
-        goto cleanup;
+        goto try_next;
       }
+
       if (gst_element_set_state (output->decoder,
               GST_STATE_READY) == GST_STATE_CHANGE_FAILURE) {
-        GST_DEBUG_OBJECT (dbin,
-            "Decoder '%s' failed to reach READY state, trying the next type",
+        GST_WARNING_OBJECT (dbin,
+            "Decoder '%s' failed to reach READY state",
             GST_ELEMENT_NAME (output->decoder));
         decoder_failed = TRUE;
+        goto try_next;
       }
+
       if (!gst_pad_query_accept_caps (output->decoder_sink, new_caps)) {
         GST_DEBUG_OBJECT (dbin,
             "Decoder '%s' did not accept the caps, trying the next type",
             GST_ELEMENT_NAME (output->decoder));
         decoder_failed = TRUE;
+        goto try_next;
       }
-      if (decoder_failed) {
-        gst_pad_unlink (slot->src_pad, output->decoder_sink);
-        if (output->drop_probe_id) {
-          gst_pad_remove_probe (slot->src_pad, output->drop_probe_id);
-          output->drop_probe_id = 0;
+
+      /* First lock element's sinkpad stream lock so no data reaches
+       * the possible new element added when caps are sent by element
+       * while we're still sending sticky events */
+      GST_PAD_STREAM_LOCK (output->decoder_sink);
+
+      if (gst_element_set_state (output->decoder,
+              GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE ||
+          !send_sticky_events (dbin, slot->src_pad)) {
+
+        GST_PAD_STREAM_UNLOCK (output->decoder_sink);
+        GST_WARNING_OBJECT (dbin,
+            "Decoder '%s' failed to reach PAUSED state",
+            GST_ELEMENT_NAME (output->decoder));
+        decoder_failed = TRUE;
+        goto try_next;
+      } else {
+        /* Everything went well */
+        GST_PAD_STREAM_UNLOCK (output->decoder_sink);
+        output->linked = TRUE;
+        GST_DEBUG ("created decoder %" GST_PTR_FORMAT, output->decoder);
+
+        handle_stored_latency_message (dbin, output, candidate);
+        remove_candidate_decoder (dbin, candidate);
+      }
+
+      break;
+
+    try_next:
+      {
+        if (decoder_failed)
+          remove_decoder_link (output, slot);
+        if (candidate)
+          remove_candidate_decoder (dbin, candidate);
+
+        if (!next_factory->next) {
+          ret = FALSE;
+          if (!decoder_failed)
+            goto cleanup;
+          if (output->decoder == NULL)
+            goto missing_decoder;
+        } else {
+          next_factory = next_factory->next;
         }
-
-        gst_element_set_locked_state (output->decoder, TRUE);
-        gst_element_set_state (output->decoder, GST_STATE_NULL);
-
-        gst_bin_remove ((GstBin *) dbin, output->decoder);
-        output->decoder = NULL;
       }
-      next_factory = next_factory->next;
     }
     gst_plugin_feature_list_free (factories);
   } else {
@@ -2934,8 +3129,7 @@ reconfigure_output_stream (DecodebinOutputStream * output,
   }
   gst_caps_unref (new_caps);
 
-  output->linked = TRUE;
-  if (!gst_ghost_pad_set_target ((GstGhostPad *) output->src_pad,
+  if (!decode_pad_set_target ((GstGhostPad *) output->src_pad,
           output->decoder_src)) {
     GST_ERROR_OBJECT (dbin, "Could not expose decoder pad");
     ret = FALSE;
@@ -2965,6 +3159,14 @@ reconfigure_output_stream (DecodebinOutputStream * output,
 
   output->slot = slot;
   return ret;
+
+missing_decoder:
+  {
+    GstCaps *caps;
+    caps = gst_stream_get_caps (slot->active_stream);
+    *msg = gst_missing_decoder_message_new (GST_ELEMENT_CAST (dbin), caps);
+    gst_caps_unref (caps);
+  }
 
 cleanup:
   {
@@ -3556,7 +3758,7 @@ free_output_stream (GstDecodebin3 * dbin, DecodebinOutputStream * output)
     output->slot = NULL;
   }
   gst_object_replace ((GstObject **) & output->decoder_sink, NULL);
-  gst_ghost_pad_set_target ((GstGhostPad *) output->src_pad, NULL);
+  decode_pad_set_target ((GstGhostPad *) output->src_pad, NULL);
   gst_object_replace ((GstObject **) & output->decoder_src, NULL);
   if (output->src_exposed) {
     gst_element_remove_pad ((GstElement *) dbin, output->src_pad);

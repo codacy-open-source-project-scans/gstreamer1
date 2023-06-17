@@ -4444,8 +4444,8 @@ qtdemux_parse_moof (GstQTDemux * qtdemux, const guint8 * buffer, guint length,
         && (stream->protection_scheme_type == FOURCC_cenc
             || stream->protection_scheme_type == FOURCC_cbcs)) {
       QtDemuxCencSampleSetInfo *info = stream->protection_scheme_info;
-      GNode *sbgp_node, *sgpd_node;
-      GstByteReader sgpd_data, sbgp_data;
+      GNode *sgpd_node;
+      GstByteReader sgpd_data;
 
       if (info->fragment_group_properties) {
         g_ptr_array_free (info->fragment_group_properties, TRUE);
@@ -4471,17 +4471,20 @@ qtdemux_parse_moof (GstQTDemux * qtdemux, const guint8 * buffer, guint length,
             FOURCC_sgpd, &sgpd_data);
       }
 
-      sbgp_node = qtdemux_tree_get_child_by_type_full (traf_node, FOURCC_sbgp,
-          &sbgp_data);
-      while (sbgp_node) {
-        if (qtdemux_parse_sbgp (qtdemux, stream, &sbgp_data, FOURCC_seig,
-                &info->sample_to_group_map, info->default_properties,
-                info->track_group_properties,
-                info->fragment_group_properties)) {
-          break;
+      if (info->fragment_group_properties) {
+        GstByteReader sbgp_data;
+        GNode *sbgp_node = qtdemux_tree_get_child_by_type_full (traf_node,
+            FOURCC_sbgp, &sbgp_data);
+        while (sbgp_node) {
+          if (qtdemux_parse_sbgp (qtdemux, stream, &sbgp_data, FOURCC_seig,
+                  &info->sample_to_group_map, info->default_properties,
+                  info->track_group_properties,
+                  info->fragment_group_properties)) {
+            break;
+          }
+          sbgp_node = qtdemux_tree_get_sibling_by_type_full (sbgp_node,
+              FOURCC_sgpd, &sbgp_data);
         }
-        sbgp_node = qtdemux_tree_get_sibling_by_type_full (sbgp_node,
-            FOURCC_sgpd, &sbgp_data);
       }
     }
 
@@ -13205,6 +13208,16 @@ qtdemux_parse_trak (GstQTDemux * qtdemux, GNode * trak)
           entry->bytes_per_packet = entry->bytes_per_sample;
           break;
         }
+
+          /* According to TS 102 366, the channel count in
+           * a (E)AC3SampleEntry box is to be ignored */
+        case 0x20736d:
+        case GST_MAKE_FOURCC ('e', 'c', '-', '3'):
+        case GST_MAKE_FOURCC ('s', 'a', 'c', '3'):     // Nero Recode
+        case FOURCC_ac_3:
+          entry->n_channels = 0;
+          break;
+
         default:
           break;
       }

@@ -3528,7 +3528,11 @@ gst_parse_bin_from_description_full (const gchar * bin_description,
 GstClockTime
 gst_util_get_timestamp (void)
 {
+#if defined(G_OS_WIN32) && !defined(GST_STATIC_COMPILATION)
+  /* priv_gst_clock_init() is called in DllMain */
+#else
   priv_gst_clock_init ();
+#endif
   return priv_gst_get_monotonic_time ();
 }
 
@@ -3669,6 +3673,73 @@ gst_util_greatest_common_divisor_int64 (gint64 a, gint64 b)
   return ABS (a);
 }
 
+/**
+ * gst_util_simplify_fraction:
+ * @numerator: First value as #gint
+ * @denominator: Second value as #gint
+ * @n_terms: non-significative terms (typical value: 8)
+ * @threshold: threshold (typical value: 333)
+ *
+ * Calculates the simpler representation of @numerator and @denominator and
+ * update both values with the resulting simplified fraction.
+ *
+ * Simplify a fraction using a simple continued fraction decomposition.
+ * The idea here is to convert fractions such as 333333/10000000 to 1/30
+ * using 32 bit arithmetic only. The algorithm is not perfect and relies
+ * upon two arbitrary parameters to remove non-significative terms from
+ * the simple continued fraction decomposition. Using 8 and 333 for
+ * @n_terms and @threshold respectively seems to give nice results.
+ *
+ * Since: 1.24
+ */
+void
+gst_util_simplify_fraction (gint * numerator, gint * denominator,
+    guint n_terms, guint threshold)
+{
+  guint *an;
+  guint x, y, r;
+  guint i, n;
+
+  an = g_malloc_n (n_terms, sizeof (*an));
+  if (an == NULL)
+    return;
+
+  /*
+   * Convert the fraction to a simple continued fraction. See
+   * https://en.wikipedia.org/wiki/Continued_fraction
+   * Stop if the current term is bigger than or equal to the given
+   * threshold.
+   */
+  x = *numerator;
+  y = *denominator;
+
+  for (n = 0; n < n_terms && y != 0; ++n) {
+    an[n] = x / y;
+    if (an[n] >= threshold) {
+      if (n < 2)
+        n++;
+      break;
+    }
+
+    r = x - an[n] * y;
+    x = y;
+    y = r;
+  }
+
+  /* Expand the simple continued fraction back to an integer fraction. */
+  x = 0;
+  y = 1;
+
+  for (i = n; i > 0; --i) {
+    r = y;
+    y = an[i - 1] * y + x;
+    x = r;
+  }
+
+  *numerator = y;
+  *denominator = x;
+  g_free (an);
+}
 
 /**
  * gst_util_fraction_to_double:
