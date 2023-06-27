@@ -776,7 +776,7 @@ subrip_fix_up_markup (gchar ** p_txt, gconstpointer allowed_tags_ptr)
     }
 
     if (*next_tag == '<' && *(next_tag + 1) == '/') {
-      end_tag = strchr (cur, '>');
+      end_tag = strchr (next_tag, '>');
       if (end_tag) {
         const gchar *last = NULL;
         if (num_open_tags > 0)
@@ -791,6 +791,8 @@ subrip_fix_up_markup (gchar ** p_txt, gconstpointer allowed_tags_ptr)
         } else {
           --num_open_tags;
           g_ptr_array_remove_index (open_tags, num_open_tags);
+          cur = end_tag + 1;
+          continue;
         }
       }
     }

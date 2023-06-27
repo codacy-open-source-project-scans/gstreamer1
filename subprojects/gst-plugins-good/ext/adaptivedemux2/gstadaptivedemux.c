@@ -1428,38 +1428,6 @@ gst_adaptive_demux_reset (GstAdaptiveDemux * demux)
 }
 
 static gboolean
-gst_adaptive_demux_query (GstElement * element, GstQuery * query)
-{
-  GstAdaptiveDemux *demux = GST_ADAPTIVE_DEMUX_CAST (element);
-
-  GST_LOG_OBJECT (demux, "%" GST_PTR_FORMAT, query);
-
-  switch (GST_QUERY_TYPE (query)) {
-    case GST_QUERY_BUFFERING:
-    {
-      GstFormat format;
-      gst_query_parse_buffering_range (query, &format, NULL, NULL, NULL);
-
-      if (!demux->output_period) {
-        if (format != GST_FORMAT_TIME) {
-          GST_DEBUG_OBJECT (demux,
-              "No period setup yet, can't answer non-TIME buffering queries");
-          return FALSE;
-        }
-
-        GST_DEBUG_OBJECT (demux,
-            "No period setup yet, but still answering buffering query");
-        return TRUE;
-      }
-    }
-    default:
-      break;
-  }
-
-  return GST_ELEMENT_CLASS (parent_class)->query (element, query);
-}
-
-static gboolean
 gst_adaptive_demux_send_event (GstElement * element, GstEvent * event)
 {
   GstAdaptiveDemux *demux = GST_ADAPTIVE_DEMUX_CAST (element);
@@ -2065,19 +2033,16 @@ gst_adaptive_demux_handle_seek_event (GstAdaptiveDemux * demux,
   gint64 start, stop;
   guint32 seqnum;
   gboolean update;
-  gboolean ret;
+  gboolean ret = FALSE;
   GstSegment oldsegment;
   GstEvent *flush_event;
 
   GST_INFO_OBJECT (demux, "Received seek event");
 
-  GST_API_LOCK (demux);
-
   gst_event_parse_seek (event, &rate, &format, &flags, &start_type, &start,
       &stop_type, &stop);
 
   if (format != GST_FORMAT_TIME) {
-    GST_API_UNLOCK (demux);
     GST_WARNING_OBJECT (demux,
         "Adaptive demuxers only support TIME-based seeking");
     gst_event_unref (event);
@@ -2086,15 +2051,16 @@ gst_adaptive_demux_handle_seek_event (GstAdaptiveDemux * demux,
 
   if (flags & GST_SEEK_FLAG_SEGMENT) {
     GST_FIXME_OBJECT (demux, "Handle segment seeks");
-    GST_API_UNLOCK (demux);
     gst_event_unref (event);
     return FALSE;
   }
 
   seqnum = gst_event_get_seqnum (event);
 
+  GST_API_LOCK (demux);
   if (!GST_ADAPTIVE_SCHEDULER_LOCK (demux)) {
     GST_LOG_OBJECT (demux, "Failed to acquire scheduler context");
+    GST_API_UNLOCK (demux);
     return FALSE;
   }
 
@@ -2115,9 +2081,7 @@ gst_adaptive_demux_handle_seek_event (GstAdaptiveDemux * demux,
       GST_ERROR_OBJECT (demux,
           "Instant rate change seeks only supported in the "
           "same direction, without flushing and position change");
-      GST_ADAPTIVE_SCHEDULER_UNLOCK (demux);
-      GST_API_UNLOCK (demux);
-      return FALSE;
+      goto unlock_return;
     }
 
     rate_multiplier = rate / demux->segment.rate;
@@ -2133,32 +2097,17 @@ gst_adaptive_demux_handle_seek_event (GstAdaptiveDemux * demux,
       demux->instant_rate_multiplier = rate_multiplier;
       GST_ADAPTIVE_DEMUX_SEGMENT_UNLOCK (demux);
     }
-
-    GST_ADAPTIVE_SCHEDULER_UNLOCK (demux);
-    GST_API_UNLOCK (demux);
-    gst_event_unref (event);
-
-    return ret;
+    goto unlock_return;
   }
 
-  if (!gst_adaptive_demux_can_seek (demux)) {
-    GST_ADAPTIVE_SCHEDULER_UNLOCK (demux);
-
-    GST_API_UNLOCK (demux);
-    gst_event_unref (event);
-    return FALSE;
-  }
+  if (!gst_adaptive_demux_can_seek (demux))
+    goto unlock_return;
 
   /* We can only accept flushing seeks from this point onward */
   if (!(flags & GST_SEEK_FLAG_FLUSH)) {
     GST_ERROR_OBJECT (demux,
         "Non-flushing non-instant-rate seeks are not possible");
-
-    GST_ADAPTIVE_SCHEDULER_UNLOCK (demux);
-
-    GST_API_UNLOCK (demux);
-    gst_event_unref (event);
-    return FALSE;
+    goto unlock_return;
   }
 
   if (gst_adaptive_demux_is_live (demux)) {
@@ -2168,11 +2117,8 @@ gst_adaptive_demux_handle_seek_event (GstAdaptiveDemux * demux,
 
     if (!gst_adaptive_demux_get_live_seek_range (demux, &range_start,
             &range_stop)) {
-      GST_ADAPTIVE_SCHEDULER_UNLOCK (demux);
-      GST_API_UNLOCK (demux);
-      gst_event_unref (event);
       GST_WARNING_OBJECT (demux, "Failure getting the live seek ranges");
-      return FALSE;
+      goto unlock_return;
     }
 
     GST_DEBUG_OBJECT (demux,
@@ -2234,12 +2180,8 @@ gst_adaptive_demux_handle_seek_event (GstAdaptiveDemux * demux,
     }
 
     /* If the seek position is still outside of the seekable range, refuse the seek */
-    if (!start_valid || !stop_valid) {
-      GST_ADAPTIVE_SCHEDULER_UNLOCK (demux);
-      GST_API_UNLOCK (demux);
-      gst_event_unref (event);
-      return FALSE;
-    }
+    if (!start_valid || !stop_valid)
+      goto unlock_return;
 
     /* Re-create seek event with changed/updated values */
     if (changed) {
@@ -2267,87 +2209,97 @@ gst_adaptive_demux_handle_seek_event (GstAdaptiveDemux * demux,
 
   GST_ADAPTIVE_DEMUX_SEGMENT_LOCK (demux);
 
-  /*
-   * Handle snap seeks as follows:
-   * 1) do the snap seeking a (random) active stream
-   * 2) use the final position on this stream to seek
-   *    on the other streams to the same position
-   *
-   * We can't snap at all streams at the same time as they might end in
-   * different positions, so just pick one and align all others to that
-   * position.
-   */
-
-  GstAdaptiveDemux2Stream *stream = NULL;
-  GList *iter;
-  /* Pick a random active stream on which to do the stream seek */
-  for (iter = demux->output_period->streams; iter; iter = iter->next) {
-    GstAdaptiveDemux2Stream *cand = iter->data;
-    if (gst_adaptive_demux2_stream_is_selected_locked (cand)) {
-      stream = cand;
-      break;
-    }
+  if (!IS_SNAP_SEEK (flags) && !(flags & GST_SEEK_FLAG_ACCURATE)) {
+    /* If no accurate seeking was specified, we want to default to seeking to
+     * the previous segment for efficient/fast playback. */
+    flags |= GST_SEEK_FLAG_KEY_UNIT;
   }
 
-  if (stream && IS_SNAP_SEEK (flags)) {
-    GstClockTimeDiff ts;
-    GstSeekFlags stream_seek_flags = flags;
+  if (IS_SNAP_SEEK (flags)) {
+    GstAdaptiveDemux2Stream *default_stream = NULL;
+    GstAdaptiveDemux2Stream *stream = NULL;
+    GList *iter;
+    /*
+     * Handle snap seeks as follows:
+     * 1) do the snap seeking a (random) active stream
+     * 1.1) If none are active yet (early-seek), pick a random default one
+     * 2) use the final position on this stream to seek
+     *    on the other streams to the same position
+     *
+     * We can't snap at all streams at the same time as they might end in
+     * different positions, so just pick one and align all others to that
+     * position.
+     */
 
-    /* snap-seek on the chosen stream and then
-     * use the resulting position to seek on all streams */
-    if (rate >= 0) {
-      if (start_type != GST_SEEK_TYPE_NONE)
-        ts = start;
-      else {
-        ts = gst_segment_position_from_running_time (&demux->segment,
-            GST_FORMAT_TIME, demux->priv->global_output_position);
-        start_type = GST_SEEK_TYPE_SET;
-      }
-    } else {
-      if (stop_type != GST_SEEK_TYPE_NONE)
-        ts = stop;
-      else {
-        stop_type = GST_SEEK_TYPE_SET;
-        ts = gst_segment_position_from_running_time (&demux->segment,
-            GST_FORMAT_TIME, demux->priv->global_output_position);
-      }
-    }
-
-    GstFlowReturn flow_ret =
-        gst_adaptive_demux2_stream_seek (stream, rate >= 0, stream_seek_flags,
-        ts, &ts);
-
-    /* Handle fragment info waiting on BUSY */
-    while (flow_ret == GST_ADAPTIVE_DEMUX_FLOW_BUSY) {
-      if (!gst_adaptive_demux2_stream_wait_prepared (stream))
+    /* Pick a random active stream on which to do the stream seek */
+    for (iter = demux->output_period->streams; iter; iter = iter->next) {
+      GstAdaptiveDemux2Stream *cand = iter->data;
+      if (gst_adaptive_demux2_stream_is_selected_locked (cand)) {
+        stream = cand;
         break;
-      flow_ret = gst_adaptive_demux2_stream_update_fragment_info (stream);
+      }
+      if (default_stream == NULL
+          && gst_adaptive_demux2_stream_is_default_locked (cand))
+        default_stream = cand;
     }
 
-    if (flow_ret != GST_FLOW_OK) {
-      GST_DEBUG_OBJECT (demux,
-          "Seek on stream %" GST_PTR_FORMAT " failed with flow return %s",
-          stream, gst_flow_get_name (flow_ret));
+    if (stream == NULL)
+      stream = default_stream;
 
-      GST_ADAPTIVE_SCHEDULER_UNLOCK (demux);
-      GST_ADAPTIVE_DEMUX_SEGMENT_UNLOCK (demux);
+    if (stream) {
+      GstClockTimeDiff ts;
+      GstSeekFlags stream_seek_flags = flags;
 
-      GST_API_UNLOCK (demux);
+      /* snap-seek on the chosen stream and then
+       * use the resulting position to seek on all streams */
+      if (rate >= 0) {
+        if (start_type != GST_SEEK_TYPE_NONE)
+          ts = start;
+        else {
+          ts = gst_segment_position_from_running_time (&demux->segment,
+              GST_FORMAT_TIME, demux->priv->global_output_position);
+          start_type = GST_SEEK_TYPE_SET;
+        }
+      } else {
+        if (stop_type != GST_SEEK_TYPE_NONE)
+          ts = stop;
+        else {
+          stop_type = GST_SEEK_TYPE_SET;
+          ts = gst_segment_position_from_running_time (&demux->segment,
+              GST_FORMAT_TIME, demux->priv->global_output_position);
+        }
+      }
+
+      GstFlowReturn flow_ret =
+          gst_adaptive_demux2_stream_seek (stream, rate >= 0, stream_seek_flags,
+          ts, &ts);
+
+      /* Handle fragment info waiting on BUSY */
+      while (flow_ret == GST_ADAPTIVE_DEMUX_FLOW_BUSY) {
+        if (!gst_adaptive_demux2_stream_wait_prepared (stream))
+          break;
+        flow_ret = gst_adaptive_demux2_stream_update_fragment_info (stream);
+      }
+
+      if (flow_ret != GST_FLOW_OK) {
+        GST_DEBUG_OBJECT (demux,
+            "Seek on stream %" GST_PTR_FORMAT " failed with flow return %s",
+            stream, gst_flow_get_name (flow_ret));
+        GST_ADAPTIVE_DEMUX_SEGMENT_UNLOCK (demux);
+        goto unlock_return;
+      }
+      /* replace event with a new one without snapping to seek on all streams */
       gst_event_unref (event);
-      return FALSE;
+      if (rate >= 0) {
+        start = ts;
+      } else {
+        stop = ts;
+      }
+      event =
+          gst_event_new_seek (rate, format, REMOVE_SNAP_FLAGS (flags),
+          start_type, start, stop_type, stop);
+      GST_DEBUG_OBJECT (demux, "Adapted snap seek to %" GST_PTR_FORMAT, event);
     }
-
-    /* replace event with a new one without snapping to seek on all streams */
-    gst_event_unref (event);
-    if (rate >= 0) {
-      start = ts;
-    } else {
-      stop = ts;
-    }
-    event =
-        gst_event_new_seek (rate, format, REMOVE_SNAP_FLAGS (flags),
-        start_type, start, stop_type, stop);
-    GST_DEBUG_OBJECT (demux, "Adapted snap seek to %" GST_PTR_FORMAT, event);
   }
 
   ret = gst_segment_do_seek (&demux->segment, rate, format, flags, start_type,
@@ -2400,6 +2352,7 @@ gst_adaptive_demux_handle_seek_event (GstAdaptiveDemux * demux,
   gst_adaptive_demux_set_streams_can_download_fragments (demux, TRUE);
   gst_adaptive_demux_start_tasks (demux);
 
+unlock_return:
   GST_ADAPTIVE_SCHEDULER_UNLOCK (demux);
   GST_API_UNLOCK (demux);
   gst_event_unref (event);
@@ -2625,6 +2578,54 @@ gst_adaptive_demux_src_event (GstPad * pad, GstObject * parent,
 }
 
 static gboolean
+gst_adaptive_demux_handle_query_seeking (GstAdaptiveDemux * demux,
+    GstQuery * query)
+{
+  GstFormat fmt = GST_FORMAT_UNDEFINED;
+  gint64 stop = -1;
+  gint64 start = 0;
+  gboolean ret = FALSE;
+
+  if (!g_atomic_int_get (&demux->priv->have_manifest)) {
+    GST_INFO_OBJECT (demux,
+        "Don't have manifest yet, can't answer seeking query");
+    return FALSE;               /* can't answer without manifest */
+  }
+
+  GST_MANIFEST_LOCK (demux);
+
+  gst_query_parse_seeking (query, &fmt, NULL, NULL, NULL);
+  GST_INFO_OBJECT (demux, "Received GST_QUERY_SEEKING with format %d", fmt);
+  if (fmt == GST_FORMAT_TIME) {
+    GstClockTime duration;
+    gboolean can_seek = gst_adaptive_demux_can_seek (demux);
+
+    ret = TRUE;
+    if (can_seek) {
+      if (gst_adaptive_demux_is_live (demux)) {
+        ret = gst_adaptive_demux_get_live_seek_range (demux, &start, &stop);
+
+        if (!ret) {
+          GST_MANIFEST_UNLOCK (demux);
+          GST_INFO_OBJECT (demux, "can't answer seeking query");
+          return FALSE;
+        }
+      } else {
+        duration = demux->priv->duration;
+        if (GST_CLOCK_TIME_IS_VALID (duration) && duration > 0)
+          stop = duration;
+      }
+    }
+    gst_query_set_seeking (query, fmt, can_seek, start, stop);
+    GST_INFO_OBJECT (demux, "GST_QUERY_SEEKING returning with start : %"
+        GST_TIME_FORMAT ", stop : %" GST_TIME_FORMAT,
+        GST_TIME_ARGS (start), GST_TIME_ARGS (stop));
+  }
+  GST_MANIFEST_UNLOCK (demux);
+  return ret;
+}
+
+static gboolean
 gst_adaptive_demux_src_query (GstPad * pad, GstObject * parent,
     GstQuery * query)
 {
@@ -2633,7 +2634,6 @@ gst_adaptive_demux_src_query (GstPad * pad, GstObject * parent,
 
   if (query == NULL)
     return FALSE;
-
 
   switch (query->type) {
     case GST_QUERY_DURATION:{
@@ -2671,49 +2671,9 @@ gst_adaptive_demux_src_query (GstPad * pad, GstObject * parent,
       ret = TRUE;
       break;
     }
-    case GST_QUERY_SEEKING:{
-      GstFormat fmt;
-      gint64 stop = -1;
-      gint64 start = 0;
-
-      if (!g_atomic_int_get (&demux->priv->have_manifest)) {
-        GST_INFO_OBJECT (demux,
-            "Don't have manifest yet, can't answer seeking query");
-        return FALSE;           /* can't answer without manifest */
-      }
-
-      GST_MANIFEST_LOCK (demux);
-
-      gst_query_parse_seeking (query, &fmt, NULL, NULL, NULL);
-      GST_INFO_OBJECT (demux, "Received GST_QUERY_SEEKING with format %d", fmt);
-      if (fmt == GST_FORMAT_TIME) {
-        GstClockTime duration;
-        gboolean can_seek = gst_adaptive_demux_can_seek (demux);
-
-        ret = TRUE;
-        if (can_seek) {
-          if (gst_adaptive_demux_is_live (demux)) {
-            ret = gst_adaptive_demux_get_live_seek_range (demux, &start, &stop);
-
-            if (!ret) {
-              GST_MANIFEST_UNLOCK (demux);
-              GST_INFO_OBJECT (demux, "can't answer seeking query");
-              return FALSE;
-            }
-          } else {
-            duration = demux->priv->duration;
-            if (GST_CLOCK_TIME_IS_VALID (duration) && duration > 0)
-              stop = duration;
-          }
-        }
-        gst_query_set_seeking (query, fmt, can_seek, start, stop);
-        GST_INFO_OBJECT (demux, "GST_QUERY_SEEKING returning with start : %"
-            GST_TIME_FORMAT ", stop : %" GST_TIME_FORMAT,
-            GST_TIME_ARGS (start), GST_TIME_ARGS (stop));
-      }
-      GST_MANIFEST_UNLOCK (demux);
+    case GST_QUERY_SEEKING:
+      ret = gst_adaptive_demux_handle_query_seeking (demux, query);
       break;
-    }
     case GST_QUERY_URI:
 
       GST_MANIFEST_LOCK (demux);
@@ -2741,6 +2701,44 @@ gst_adaptive_demux_src_query (GstPad * pad, GstObject * parent,
   }
 
   return ret;
+}
+
+static gboolean
+gst_adaptive_demux_query (GstElement * element, GstQuery * query)
+{
+  GstAdaptiveDemux *demux = GST_ADAPTIVE_DEMUX_CAST (element);
+
+  GST_LOG_OBJECT (demux, "%" GST_PTR_FORMAT, query);
+
+  switch (GST_QUERY_TYPE (query)) {
+    case GST_QUERY_BUFFERING:
+    {
+      GstFormat format;
+      gst_query_parse_buffering_range (query, &format, NULL, NULL, NULL);
+
+      if (!demux->output_period) {
+        if (format != GST_FORMAT_TIME) {
+          GST_DEBUG_OBJECT (demux,
+              "No period setup yet, can't answer non-TIME buffering queries");
+          return FALSE;
+        }
+
+        GST_DEBUG_OBJECT (demux,
+            "No period setup yet, but still answering buffering query");
+        return TRUE;
+      }
+    }
+    case GST_QUERY_SEEKING:
+    {
+      /* Source pads might not be present early on which would cause the default
+       * element query handler to fail, yet we can answer this query */
+      return gst_adaptive_demux_handle_query_seeking (demux, query);
+    }
+    default:
+      break;
+  }
+
+  return GST_ELEMENT_CLASS (parent_class)->query (element, query);
 }
 
 gboolean
