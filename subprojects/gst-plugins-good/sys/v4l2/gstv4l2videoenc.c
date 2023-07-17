@@ -517,6 +517,26 @@ negotiate_profile_and_level (GstCapsFeatures * features, GstStructure * s,
   return failed;
 }
 
+static GstCaps *
+gst_v4l2_video_enc_sink_getcaps (GstVideoEncoder * encoder, GstCaps * filter)
+{
+  GstV4l2VideoEnc *self = GST_V4L2_VIDEO_ENC (encoder);
+  GstCaps *probed_caps = NULL;
+  GstCaps *caps;
+
+  if (self->probed_sinkcaps)
+    probed_caps = gst_caps_ref (self->probed_sinkcaps);
+
+  caps = gst_video_encoder_proxy_getcaps (encoder, probed_caps, filter);
+
+  if (probed_caps)
+    gst_caps_unref (probed_caps);
+
+  GST_DEBUG_OBJECT (self, "Returning sink caps %" GST_PTR_FORMAT, caps);
+
+  return caps;
+}
+
 static gboolean
 gst_v4l2_video_enc_negotiate (GstVideoEncoder * encoder)
 {
@@ -635,31 +655,27 @@ static void
 gst_v4l2_video_enc_loop (GstVideoEncoder * encoder)
 {
   GstV4l2VideoEnc *self = GST_V4L2_VIDEO_ENC (encoder);
+  GstBufferPool *pool = gst_v4l2_object_get_buffer_pool (self->v4l2capture);
+  GstV4l2BufferPool *cpool = GST_V4L2_BUFFER_POOL (pool);
   GstVideoCodecFrame *frame;
   GstBuffer *buffer = NULL;
   GstFlowReturn ret;
 
   GST_LOG_OBJECT (encoder, "Allocate output buffer");
 
-  buffer = gst_video_encoder_allocate_output_buffer (encoder,
-      self->v4l2capture->info.size);
-
-  if (NULL == buffer) {
-    ret = GST_FLOW_FLUSHING;
+  ret = gst_buffer_pool_acquire_buffer (pool, &buffer, NULL);
+  if (ret != GST_FLOW_OK) {
+    if (cpool)
+      gst_object_unref (cpool);
     goto beach;
   }
 
   /* FIXME Check if buffer isn't the last one here */
 
   GST_LOG_OBJECT (encoder, "Process output buffer");
-  {
-    GstV4l2BufferPool *cpool =
-        GST_V4L2_BUFFER_POOL (gst_v4l2_object_get_buffer_pool
-        (self->v4l2capture));
-    ret = gst_v4l2_buffer_pool_process (cpool, &buffer, NULL);
-    if (cpool)
-      gst_object_unref (cpool);
-  }
+  ret = gst_v4l2_buffer_pool_process (cpool, &buffer, NULL);
+  if (cpool)
+    gst_object_unref (cpool);
   if (ret != GST_FLOW_OK)
     goto beach;
 
@@ -1006,46 +1022,6 @@ gst_v4l2_video_enc_src_query (GstVideoEncoder * encoder, GstQuery * query)
 }
 
 static gboolean
-gst_v4l2_video_enc_sink_query (GstVideoEncoder * encoder, GstQuery * query)
-{
-  gboolean ret = TRUE;
-  GstV4l2VideoEnc *self = GST_V4L2_VIDEO_ENC (encoder);
-
-  switch (GST_QUERY_TYPE (query)) {
-    case GST_QUERY_CAPS:{
-      GstCaps *filter, *result = NULL;
-      GstPad *pad = GST_VIDEO_ENCODER_SINK_PAD (encoder);
-
-      gst_query_parse_caps (query, &filter);
-
-      if (self->probed_sinkcaps)
-        result = gst_caps_ref (self->probed_sinkcaps);
-      else
-        result = gst_pad_get_pad_template_caps (pad);
-
-      if (filter) {
-        GstCaps *tmp = result;
-        result =
-            gst_caps_intersect_full (filter, tmp, GST_CAPS_INTERSECT_FIRST);
-        gst_caps_unref (tmp);
-      }
-
-      GST_DEBUG_OBJECT (self, "Returning sink caps %" GST_PTR_FORMAT, result);
-
-      gst_query_set_caps_result (query, result);
-      gst_caps_unref (result);
-      break;
-    }
-
-    default:
-      ret = GST_VIDEO_ENCODER_CLASS (parent_class)->sink_query (encoder, query);
-      break;
-  }
-
-  return ret;
-}
-
-static gboolean
 gst_v4l2_video_enc_sink_event (GstVideoEncoder * encoder, GstEvent * event)
 {
   GstV4l2VideoEnc *self = GST_V4L2_VIDEO_ENC (encoder);
@@ -1170,14 +1146,14 @@ gst_v4l2_video_enc_class_init (GstV4l2VideoEncClass * klass)
   video_encoder_class->flush = GST_DEBUG_FUNCPTR (gst_v4l2_video_enc_flush);
   video_encoder_class->set_format =
       GST_DEBUG_FUNCPTR (gst_v4l2_video_enc_set_format);
+  video_encoder_class->getcaps =
+      GST_DEBUG_FUNCPTR (gst_v4l2_video_enc_sink_getcaps);
   video_encoder_class->negotiate =
       GST_DEBUG_FUNCPTR (gst_v4l2_video_enc_negotiate);
   video_encoder_class->decide_allocation =
       GST_DEBUG_FUNCPTR (gst_v4l2_video_enc_decide_allocation);
   video_encoder_class->propose_allocation =
       GST_DEBUG_FUNCPTR (gst_v4l2_video_enc_propose_allocation);
-  video_encoder_class->sink_query =
-      GST_DEBUG_FUNCPTR (gst_v4l2_video_enc_sink_query);
   video_encoder_class->src_query =
       GST_DEBUG_FUNCPTR (gst_v4l2_video_enc_src_query);
   video_encoder_class->sink_event =
