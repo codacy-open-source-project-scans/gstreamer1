@@ -2812,6 +2812,13 @@ return to upstream/caller (indicating either GST_FLOW_ERROR or GST_FLOW_OK).</do
         </parameter>
       </parameters>
     </function-macro>
+    <constant name="VIDEO_DMA_DRM_CAPS_MAKE" value="video/x-raw(memory:DMABuf), format = (string) DMA_DRM, width = " c:type="GST_VIDEO_DMA_DRM_CAPS_MAKE" version="1.24">
+      <doc xml:space="preserve" filename="../subprojects/gst-plugins-base/gst-libs/gst/video/video-info-dma.h">Generic caps string for video wit DMABuf(GST_CAPS_FEATURE_MEMORY_DMABUF)
+feature, for use in pad templates. As drm-format is supposed to be defined
+at run-time it's not predefined here.</doc>
+      <source-position filename="../subprojects/gst-plugins-base/gst-libs/gst/video/video-info-dma.h"/>
+      <type name="utf8" c:type="gchar*"/>
+    </constant>
     <function-macro name="VIDEO_ENCODER" c:identifier="GST_VIDEO_ENCODER" introspectable="0">
       <source-position filename="../subprojects/gst-plugins-base/gst-libs/gst/video/gstvideoencoder.h"/>
       <parameters>
@@ -10110,6 +10117,12 @@ for details about the layout and packing of these formats in memory.</doc>
       <member name="nv12_10le40_4l4" value="113" c:identifier="GST_VIDEO_FORMAT_NV12_10LE40_4L4" glib:nick="nv12-10le40-4l4">
         <doc xml:space="preserve" filename="../subprojects/gst-plugins-base/gst-libs/gst/video/video-format.h">@GST_VIDEO_FORMAT_NV12_10LE40 with 4x4 pixels tiles (5 bytes per tile row) (Since: 1.24)</doc>
       </member>
+      <member name="dma_drm" value="114" c:identifier="GST_VIDEO_FORMAT_DMA_DRM" glib:nick="dma-drm">
+        <doc xml:space="preserve" filename="../subprojects/gst-plugins-base/gst-libs/gst/video/video-format.h">DMA DRM special format. It's only used with
+                           memory:DMABuf #GstCapsFeatures, where an extra
+                           parameter (drm-format) is required to define the
+                           image format and its memory layout.</doc>
+      </member>
       <function name="from_fourcc" c:identifier="gst_video_format_from_fourcc">
         <doc xml:space="preserve" filename="../subprojects/gst-plugins-base/gst-libs/gst/video/video-format.c">Converts a FOURCC value into the corresponding #GstVideoFormat.
 If the FOURCC cannot be represented by #GstVideoFormat,
@@ -11378,8 +11391,8 @@ gst_video_info_dma_drm_new()</doc>
       </method>
       <method name="to_caps" c:identifier="gst_video_info_dma_drm_to_caps" version="1.24">
         <doc xml:space="preserve" filename="../subprojects/gst-plugins-base/gst-libs/gst/video/video-info-dma.c">Convert the values of @drm_info into a #GstCaps. Please note that the
-@caps returned will be a dma drm caps which does not contain format field,
-but contains a drm-format field instead. The value of drm-format field is
+@caps returned will be a dma drm caps which sets format field to DMA_DRM,
+and contains a new drm-format field. The value of drm-format field is
 composed of a drm fourcc and a modifier, such as NV12:0x0100000000000002.</doc>
         <source-position filename="../subprojects/gst-plugins-base/gst-libs/gst/video/video-info-dma.h"/>
         <return-value transfer-ownership="full" nullable="1">
@@ -11397,7 +11410,7 @@ info in @drm_info.</doc>
       <method name="to_video_info" c:identifier="gst_video_info_dma_drm_to_video_info" version="1.24">
         <doc xml:space="preserve" filename="../subprojects/gst-plugins-base/gst-libs/gst/video/video-info-dma.c">Convert the #GstVideoInfoDmaDrm into a traditional #GstVideoInfo with
 recognized video format. For DMA kind memory, the non linear DMA format
-should be recognized as #GST_VIDEO_FORMAT_ENCODED. This helper function
+should be recognized as #GST_VIDEO_FORMAT_DMA_DRM. This helper function
 sets @info's video format into the default value according to @drm_info's
 drm_fourcc field.</doc>
         <source-position filename="../subprojects/gst-plugins-base/gst-libs/gst/video/video-info-dma.h"/>

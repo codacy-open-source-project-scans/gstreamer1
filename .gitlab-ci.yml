@@ -57,6 +57,7 @@ variables:
     -Dsharp=disabled
     -Drs=disabled
     -Dgpl=enabled
+    -Dintrospection=enabled
 
   SIMPLE_BUILD: >-
     ${DEFAULT_MESON_ARGS}
@@ -413,11 +414,10 @@ build fedora clang:
   needs:
     - "trigger"
     - "windows amd64 docker"
-  timeout: '45min'
+  timeout: '90m'
   variables:
     MESON_ARGS: >-
       ${DEFAULT_MESON_ARGS}
-      -Dpython=disabled
       -Dlibav=disabled
       -Dvaapi=disabled
       -Dgst-plugins-base:pango=enabled
@@ -466,6 +466,9 @@ build vs2022 amd64:
     - mkdir destdir
     - meson install -C build --destdir installdir
     - Remove-Item -Recurse -Force build\installdir
+  variables:
+    # FIXME: https://github.com/mesonbuild/meson/pull/11007
+    PKG_CONFIG: ${CI_PROJECT_DIR}/subprojects/win-pkgconfig/pkg-config.exe
 
 .build windows cross:
   extends: '.build windows'
@@ -482,6 +485,10 @@ build vs2022 x86:
   extends: '.build windows cross'
   variables:
     ARCH: 'x86'
+    # Installed python is 64 bits instead of 32 bits
+    MESON_CROSS_ARGS: >
+      -Dpython=disabled
+      -Dintrospection=disabled
 
 build vs2022 arm64:
   extends: '.build windows cross'
@@ -496,6 +503,8 @@ build vs2022 arm64:
       -Dgst-plugins-good:cairo=disabled
       -Dgst-plugins-good:soup-lookup-dep=false
       -Dgst-devtools:cairo=disabled
+      -Dpython=disabled
+      -Dintrospection=disabled
       --cross-file ci/meson/vs2022-paths.ini
       --cross-file ci/meson/vs2022-arm64-cross.ini
       --native-file ci/meson/vs2022-paths.ini
@@ -503,13 +512,12 @@ build vs2022 arm64:
 
 build msys2:
   extends: '.build windows'
-  timeout: '60min'
   script:
     - !reference [".build windows", "script"]
     # Replace backslashes with forward so bash doesn't complain
     - $env:CI_PROJECT_DIR = $env:CI_PROJECT_DIR.replace('\','/')
     # Windows Graphics Capture currently requires Visual Studio
-    - $env:MESON_ARGS = $env:MESON_ARGS.replace('-Dgst-plugins-bad:d3d11-wgc=enabled','')
+    - $env:MESON_ARGS = $env:MESON_ARGS.replace('-Dgst-plugins-bad:d3d11-wgc=enabled','') + ' -Dpython=disabled -Dintrospection=disabled'
     # Configure MSYS2 to use the UCRT64 environment, start in the same directory
     # and inherit PATH
     - C:\msys64\msys2_shell.cmd -ucrt64 -defterm -no-start -here -use-full-path -lc "meson setup build $env:MESON_ARGS && meson compile -C build"

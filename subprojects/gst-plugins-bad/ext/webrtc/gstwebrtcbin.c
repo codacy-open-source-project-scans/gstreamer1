@@ -70,6 +70,10 @@
 #define RTPHDREXT_STREAM_ID GST_RTP_HDREXT_BASE "sdes:rtp-stream-id"
 #define RTPHDREXT_REPAIRED_STREAM_ID GST_RTP_HDREXT_BASE "sdes:repaired-rtp-stream-id"
 
+#if !GLIB_CHECK_VERSION(2, 74, 0)
+#define G_CONNECT_DEFAULT 0
+#endif
+
 /**
  * SECTION: element-webrtcbin
  * title: webrtcbin
@@ -2434,6 +2438,15 @@ gst_webrtc_bin_attach_tos (GstWebRTCBin * webrtc)
   gst_webrtc_bin_update_sctp_priority (webrtc);
 }
 
+static void
+on_transceiver_notify_direction (GstWebRTCRTPTransceiver * transceiver,
+    GParamSpec * pspec, GstWebRTCBin * webrtc)
+{
+  PC_LOCK (webrtc);
+  _update_need_negotiation (webrtc);
+  PC_UNLOCK (webrtc);
+}
+
 static WebRTCTransceiver *
 _create_webrtc_transceiver (GstWebRTCBin * webrtc,
     GstWebRTCRTPTransceiverDirection direction, guint mline, GstWebRTCKind kind,
@@ -2463,14 +2476,13 @@ _create_webrtc_transceiver (GstWebRTCBin * webrtc,
 
   g_signal_connect_object (sender, "notify::priority",
       G_CALLBACK (gst_webrtc_bin_attach_tos), webrtc, G_CONNECT_SWAPPED);
+  g_signal_connect_object (trans, "notify::direction",
+      G_CALLBACK (on_transceiver_notify_direction), webrtc, G_CONNECT_DEFAULT);
 
   g_ptr_array_add (webrtc->priv->transceivers, trans);
 
   gst_object_unref (sender);
   gst_object_unref (receiver);
-
-  g_signal_emit (webrtc, gst_webrtc_bin_signals[ON_NEW_TRANSCEIVER_SIGNAL],
-      0, trans);
 
   return trans;
 }
@@ -4640,6 +4652,11 @@ _create_answer_task (GstWebRTCBin * webrtc, const GstStructure * options,
         trans = _create_webrtc_transceiver (webrtc, answer_dir, i, kind, NULL);
         rtp_trans = GST_WEBRTC_RTP_TRANSCEIVER (trans);
 
+        PC_UNLOCK (webrtc);
+        g_signal_emit (webrtc,
+            gst_webrtc_bin_signals[ON_NEW_TRANSCEIVER_SIGNAL], 0, rtp_trans);
+        PC_LOCK (webrtc);
+
         GST_LOG_OBJECT (webrtc, "Created new transceiver %" GST_PTR_FORMAT
             " for mline %u with media kind %d", trans, i, kind);
 
@@ -5735,7 +5752,7 @@ _update_transceiver_from_sdp_media (GstWebRTCBin * webrtc,
           "Cannot intersect dtls setup attributes for media %u", media_idx);
       return;
     }
-
+#if 0
     if (prev_dir != GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_NONE
         && new_dir != GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_INACTIVE
         && prev_dir != new_dir) {
@@ -5745,7 +5762,7 @@ _update_transceiver_from_sdp_media (GstWebRTCBin * webrtc,
           media_idx);
       return;
     }
-
+#endif
     if (!bundled || bundle_idx == media_idx) {
       new_rtcp_rsize = _media_has_attribute_key (local_media, "rtcp-rsize")
           && _media_has_attribute_key (remote_media, "rtcp-rsize");
@@ -6203,6 +6220,10 @@ _update_transceivers_from_sdp (GstWebRTCBin * webrtc, SDPSource source,
               _get_direction_from_media (media), i, kind, NULL);
           webrtc_transceiver_set_transport (t, stream);
           trans = GST_WEBRTC_RTP_TRANSCEIVER (t);
+          PC_UNLOCK (webrtc);
+          g_signal_emit (webrtc,
+              gst_webrtc_bin_signals[ON_NEW_TRANSCEIVER_SIGNAL], 0, trans);
+          PC_LOCK (webrtc);
         }
 
         _update_transceiver_from_sdp_media (webrtc, sdp->sdp, i, stream,
@@ -7078,6 +7099,9 @@ gst_webrtc_bin_add_transceiver (GstWebRTCBin * webrtc,
       "Created new unassociated transceiver %" GST_PTR_FORMAT, trans);
 
   PC_UNLOCK (webrtc);
+
+  g_signal_emit (webrtc, gst_webrtc_bin_signals[ON_NEW_TRANSCEIVER_SIGNAL], 0,
+      trans);
 
   return gst_object_ref (trans);
 }
@@ -8108,7 +8132,7 @@ gst_webrtc_bin_request_new_pad (GstElement * element, GstPadTemplate * templ,
     const gchar * name, const GstCaps * caps)
 {
   GstWebRTCBin *webrtc = GST_WEBRTC_BIN (element);
-  GstWebRTCRTPTransceiver *trans = NULL;
+  GstWebRTCRTPTransceiver *trans = NULL, *created_trans = NULL;
   GstWebRTCBinPad *pad = NULL;
   guint serial;
   gboolean lock_mline = FALSE;
@@ -8236,7 +8260,8 @@ gst_webrtc_bin_request_new_pad (GstElement * element, GstPadTemplate * templ,
   }
 
   if (!trans) {
-    trans = GST_WEBRTC_RTP_TRANSCEIVER (_create_webrtc_transceiver (webrtc,
+    trans = created_trans =
+        GST_WEBRTC_RTP_TRANSCEIVER (_create_webrtc_transceiver (webrtc,
             GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, -1,
             webrtc_kind_from_caps (caps), NULL));
     GST_LOG_OBJECT (webrtc, "Created new transceiver %" GST_PTR_FORMAT, trans);
@@ -8275,6 +8300,10 @@ gst_webrtc_bin_request_new_pad (GstElement * element, GstPadTemplate * templ,
   }
 
   PC_UNLOCK (webrtc);
+
+  if (created_trans)
+    g_signal_emit (webrtc, gst_webrtc_bin_signals[ON_NEW_TRANSCEIVER_SIGNAL],
+        0, created_trans);
 
   _add_pad (webrtc, pad);
 

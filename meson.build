@@ -1,6 +1,6 @@
 project('gstreamer-full', 'c',
   version : '1.23.0.1',
-  meson_version : '>= 0.62.0',
+  meson_version : '>= 0.63.0',
   default_options : ['buildtype=debugoptimized',
                      # Needed due to https://github.com/mesonbuild/meson/issues/1889,
                      # but this can cause problems in the future. Remove it
@@ -116,8 +116,16 @@ if get_option('build-tools-source') == 'subproject'
   if build_system == 'windows'
     subproject('win-flex-bison-binaries')
     subproject('win-nasm')
+    subproject('win-pkgconfig')
   elif build_system == 'darwin'
     subproject('macos-bison-binary')
+    # Newer macOS provides /usr/lib/pkgconfig/libpcre2-8.pc which is broken
+    # because it says headers are in /usr/include but that directory doesn't
+    # exist. It can only be used to find the library, which only exists on
+    # newer macOS at /usr/lib/libpcre2-8.dylib, so it's also unusable.
+    #
+    # jit support requires macOS 11.0 or newer, so disable it by default
+    subproject('pcre2', default_options: ['default_library=static', 'jit=disabled'])
   endif
 endif
 

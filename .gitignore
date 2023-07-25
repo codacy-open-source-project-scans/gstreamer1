@@ -36,8 +36,8 @@ subprojects/gvdb.wrap
 subprojects/libepoxy.wrap
 subprojects/libsass.wrap
 subprojects/libtiff.wrap
-subprojects/pcre2.wrap
 subprojects/sassc.wrap
+subprojects/abseil-cpp.wrap
 
 subprojects/*/
 !subprojects/gst-devtools
