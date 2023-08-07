@@ -1169,7 +1169,6 @@ struct _GstVaAllocator
   guint32 fourcc;
   guint32 rt_format;
 
-  GstVideoInfo derived_info;
   GstVideoInfo info;
   guint usage_hint;
 
@@ -1329,9 +1328,7 @@ _update_image_info (GstVaAllocator * va_allocator)
       && va_allocator->surface_format == va_allocator->img_format) {
     if (va_get_derive_image (va_allocator->display, surface, &image)) {
       va_allocator->use_derived = TRUE;
-      va_allocator->derived_info = va_allocator->info;
-      _update_info (&va_allocator->derived_info, &image);
-      va_destroy_image (va_allocator->display, image.image_id);
+      goto done;
     }
     image.image_id = VA_INVALID_ID;     /* reset it */
   }
@@ -1350,6 +1347,7 @@ _update_image_info (GstVaAllocator * va_allocator)
     return FALSE;
   }
 
+done:
   _update_info (&va_allocator->info, &image);
   va_destroy_image (va_allocator->display, image.image_id);
   va_destroy_surfaces (va_allocator->display, &surface, 1);
@@ -1389,47 +1387,34 @@ _va_map_unlocked (GstVaMemory * mem, GstMapFlags flags)
     mem->mapped_data = &mem->surface;
     goto success;
   }
-
-  if (va_allocator->feat_use_derived == GST_VA_FEATURE_ENABLED) {
-    use_derived = TRUE;
-  } else if (va_allocator->feat_use_derived == GST_VA_FEATURE_DISABLED) {
-    use_derived = FALSE;
-  } else {
 #ifdef G_OS_WIN32
-    /* XXX: Derived image doesn't seem to work for D3D backend */
-    use_derived = FALSE;
+  /* XXX: Derived image doesn't seem to work for D3D backend */
+  use_derived = FALSE;
 #else
+  if (va_allocator->feat_use_derived == GST_VA_FEATURE_AUTO) {
     switch (gst_va_display_get_implementation (display)) {
-      case GST_VA_IMPLEMENTATION_INTEL_IHD:
-        /* On Gen7+ Intel graphics the memory is mappable but not
-         * cached, so normal memcpy() access is very slow to read, but
-         * it's ok for writing. So let's assume that users won't prefer
-         * direct-mapped memory if they request read access. */
-        use_derived = va_allocator->use_derived && !(flags & GST_MAP_READ);
-        break;
       case GST_VA_IMPLEMENTATION_INTEL_I965:
         /* YUV derived images are tiled, so writing them is also
          * problematic */
         use_derived = va_allocator->use_derived && !((flags & GST_MAP_READ)
             || ((flags & GST_MAP_WRITE)
-                && GST_VIDEO_INFO_IS_YUV (&va_allocator->derived_info)));
+                && GST_VIDEO_INFO_IS_YUV (&va_allocator->info)));
         break;
       case GST_VA_IMPLEMENTATION_MESA_GALLIUM:
         /* Reading RGB derived images, with non-standard resolutions,
          * looks like tiled too. TODO(victor): fill a bug in Mesa. */
         use_derived = va_allocator->use_derived && !((flags & GST_MAP_READ)
-            && GST_VIDEO_INFO_IS_RGB (&va_allocator->derived_info));
+            && GST_VIDEO_INFO_IS_RGB (&va_allocator->info));
         break;
       default:
         use_derived = va_allocator->use_derived;
         break;
     }
-#endif
+  } else {
+    use_derived = va_allocator->use_derived;
   }
-  if (use_derived)
-    info = &va_allocator->derived_info;
-  else
-    info = &va_allocator->info;
+#endif
+  info = &va_allocator->info;
 
   if (!va_ensure_image (display, mem->surface, info, &mem->image, use_derived))
     return NULL;

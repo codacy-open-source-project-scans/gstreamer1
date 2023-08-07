@@ -777,7 +777,7 @@ valgrind ges:
     MESON_ARGS: >-
       ${SIMPLE_BUILD}
       -Ddoc=enabled
-      -Drs=enabled
+      -Drs=disabled
       -Dgst-docs:fatal_warnings=true
     # Disable werror for the docs build, we don't need it
     GST_WERROR: 'false'
@@ -843,6 +843,7 @@ build documentation:
       when: never
     - changes:
       - .gitlab-ci.yml
+      - .gitlab-image-tags.yml
       - ci/gitlab/*.py
       - subprojects/*.wrap
       - subprojects/gst-docs/**/*
