@@ -1,6 +1,0 @@
-<RCC>
-    <qresource prefix="/">
-        <file>main.qml</file>
-        <file>mixer.qml</file>
-    </qresource>
-</RCC>
