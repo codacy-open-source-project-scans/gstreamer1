@@ -121,6 +121,7 @@ typedef struct _GstNvH265Dec
   guint coded_width, coded_height;
   guint bitdepth;
   guint chroma_format_idc;
+  gint max_dpb_size;
 
   guint num_output_surfaces;
   guint init_max_width;
@@ -407,6 +408,18 @@ done:
   GST_ELEMENT_CLASS (parent_class)->set_context (element, context);
 }
 
+static void
+gst_nv_h265_dec_reset (GstNvH265Dec * self)
+{
+  self->width = 0;
+  self->height = 0;
+  self->coded_width = 0;
+  self->coded_height = 0;
+  self->bitdepth = 0;
+  self->chroma_format_idc = 0;
+  self->max_dpb_size = 0;
+}
+
 static gboolean
 gst_nv_h265_dec_open (GstVideoDecoder * decoder)
 {
@@ -426,6 +439,8 @@ gst_nv_h265_dec_open (GstVideoDecoder * decoder)
 
     return FALSE;
   }
+
+  gst_nv_h265_dec_reset (self);
 
   return TRUE;
 }
@@ -579,6 +594,12 @@ gst_nv_h265_dec_new_sequence (GstH265Decoder * decoder, const GstH265SPS * sps,
     modified = TRUE;
   }
 
+  if (self->max_dpb_size < max_dpb_size) {
+    GST_INFO_OBJECT (self, "Requires larger DPB size (%d -> %d)",
+        self->max_dpb_size, max_dpb_size);
+    modified = TRUE;
+  }
+
   if (modified || !gst_nv_decoder_is_configured (self->decoder)) {
     GstVideoInfo info;
     GstVideoFormat out_format = GST_VIDEO_FORMAT_UNKNOWN;
@@ -618,6 +639,7 @@ gst_nv_h265_dec_new_sequence (GstH265Decoder * decoder, const GstH265SPS * sps,
     gst_video_info_set_format (&info, out_format, GST_ROUND_UP_2 (self->width),
         GST_ROUND_UP_2 (self->height));
 
+    self->max_dpb_size = max_dpb_size;
     max_width = gst_nv_decoder_get_max_output_size (self->coded_width,
         self->init_max_width, klass->max_width);
     max_height = gst_nv_decoder_get_max_output_size (self->coded_height,
@@ -647,20 +669,9 @@ gst_nv_h265_dec_new_picture (GstH265Decoder * decoder,
     GstVideoCodecFrame * cframe, GstH265Picture * picture)
 {
   GstNvH265Dec *self = GST_NV_H265_DEC (decoder);
-  GstNvDecSurface *surface;
-  GstFlowReturn ret;
 
-  ret = gst_nv_decoder_acquire_surface (self->decoder, &surface);
-  if (ret != GST_FLOW_OK)
-    return ret;
-
-  GST_LOG_OBJECT (self, "New decoder surface %p (index %d)",
-      surface, surface->index);
-
-  gst_h265_picture_set_user_data (picture,
-      surface, (GDestroyNotify) gst_nv_dec_surface_unref);
-
-  return GST_FLOW_OK;
+  return gst_nv_decoder_new_picture (self->decoder,
+      GST_CODEC_PICTURE (picture));
 }
 
 static GstFlowReturn
@@ -668,33 +679,10 @@ gst_nv_h265_dec_output_picture (GstH265Decoder * decoder,
     GstVideoCodecFrame * frame, GstH265Picture * picture)
 {
   GstNvH265Dec *self = GST_NV_H265_DEC (decoder);
-  GstVideoDecoder *vdec = GST_VIDEO_DECODER (decoder);
-  GstNvDecSurface *surface;
-  GstFlowReturn ret = GST_FLOW_ERROR;
 
-  GST_LOG_OBJECT (self,
-      "Outputting picture %p (poc %d)", picture, picture->pic_order_cnt);
-
-  surface = (GstNvDecSurface *) gst_h265_picture_get_user_data (picture);
-  if (!surface) {
-    GST_ERROR_OBJECT (self, "No decoder surface in picture %p", picture);
-    goto error;
-  }
-
-  ret = gst_nv_decoder_finish_surface (self->decoder,
-      vdec, picture->discont_state, surface, &frame->output_buffer);
-  if (ret != GST_FLOW_OK)
-    goto error;
-
-  gst_h265_picture_unref (picture);
-
-  return gst_video_decoder_finish_frame (GST_VIDEO_DECODER (self), frame);
-
-error:
-  gst_video_decoder_drop_frame (vdec, frame);
-  gst_h265_picture_unref (picture);
-
-  return ret;
+  return gst_nv_decoder_output_picture (self->decoder,
+      GST_VIDEO_DECODER (decoder), frame, GST_CODEC_PICTURE (picture),
+      picture->buffer_flags);
 }
 
 static GstNvDecSurface *

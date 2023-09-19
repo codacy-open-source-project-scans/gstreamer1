@@ -1280,6 +1280,12 @@ gst_v4l2_buffer_pool_dqbuf (GstV4l2BufferPool * pool, GstBuffer ** buffer,
         group->buffer.index);
   }
 
+  if (group->buffer.flags & V4L2_BUF_FLAG_LAST &&
+      group->planes[0].bytesused == 0) {
+    GST_DEBUG_OBJECT (pool, "Empty last buffer, signalling eos.");
+    goto eos;
+  }
+
   outbuf = pool->buffers[group->buffer.index];
   if (outbuf == NULL)
     goto no_buffer;
@@ -1302,6 +1308,9 @@ gst_v4l2_buffer_pool_dqbuf (GstV4l2BufferPool * pool, GstBuffer ** buffer,
         outbuf, group->buffer.sequence, group->buffer.index, group->mem[i],
         group->planes[i].bytesused, i, group->buffer.flags,
         GST_TIME_ARGS (timestamp), pool->num_queued, outbuf, old_buffer_state);
+
+    if (GST_VIDEO_INFO_FORMAT (&pool->caps_info) == GST_VIDEO_FORMAT_ENCODED)
+      break;
 
     /* Ensure our offset matches the expected plane size, or image size if
      * there is only one memory */

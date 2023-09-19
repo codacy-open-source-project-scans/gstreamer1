@@ -235,6 +235,10 @@ gst_gl_format_from_video_info (GstGLContext * context,
     case GST_VIDEO_FORMAT_BGRP:
     case GST_VIDEO_FORMAT_GBRA:
       return GST_GL_R8;
+    case GST_VIDEO_FORMAT_I420_10LE:
+    case GST_VIDEO_FORMAT_I420_10BE:
+    case GST_VIDEO_FORMAT_I420_12LE:
+    case GST_VIDEO_FORMAT_I420_12BE:
     case GST_VIDEO_FORMAT_A420_10LE:
     case GST_VIDEO_FORMAT_A420_10BE:
     case GST_VIDEO_FORMAT_A420_12LE:
@@ -533,7 +537,10 @@ gst_gl_video_format_swizzle (GstVideoFormat video_format, int *swizzle)
 {
   const GstVideoFormatInfo *finfo = gst_video_format_get_info (video_format);
 
-  if (finfo->n_planes == 1) {
+  if (finfo->n_planes == 1 &&
+      (finfo->flags & GST_VIDEO_FORMAT_FLAG_RGB ||
+          video_format == GST_VIDEO_FORMAT_AYUV ||
+          video_format == GST_VIDEO_FORMAT_VUYA)) {
     get_single_planar_format_gl_swizzle_order (video_format, swizzle);
     return TRUE;
   }
@@ -557,6 +564,10 @@ gst_gl_video_format_swizzle (GstVideoFormat video_format, int *swizzle)
     case GST_VIDEO_FORMAT_NV12_16L32S:
     case GST_VIDEO_FORMAT_NV12_4L4:
     case GST_VIDEO_FORMAT_I420:
+    case GST_VIDEO_FORMAT_I420_10LE:
+    case GST_VIDEO_FORMAT_I420_10BE:
+    case GST_VIDEO_FORMAT_I420_12LE:
+    case GST_VIDEO_FORMAT_I420_12BE:
     case GST_VIDEO_FORMAT_Y444:
     case GST_VIDEO_FORMAT_Y42B:
     case GST_VIDEO_FORMAT_Y41B:

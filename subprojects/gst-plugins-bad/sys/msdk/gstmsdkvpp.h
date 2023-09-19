@@ -88,6 +88,9 @@ struct _GstMsdkVPP
   gboolean add_video_meta;
   gboolean need_vpp;
   guint flags;
+  /* To check if sinkcaps have HDR SEIs*/
+  gboolean have_mdcv;
+  gboolean have_cll;
 
   /* element properties */
   gboolean hardware;
@@ -110,6 +113,7 @@ struct _GstMsdkVPP
   guint crop_right;
   guint crop_top;
   guint crop_bottom;
+  gboolean hdr_tone_mapping;
 
   GstClockTime buffer_duration;
 
@@ -124,6 +128,9 @@ struct _GstMsdkVPP
   mfxExtVPPScaling mfx_scaling;
   mfxExtVPPFrameRateConversion mfx_frc;
 
+  GstVideoMasteringDisplayInfo mdcv_info;
+  GstVideoContentLightLevel cll_info;
+
   /* Extended buffers */
   mfxExtBuffer *extra_params[MAX_EXTRA_PARAMS];
   guint num_extra_params;
@@ -131,6 +138,8 @@ struct _GstMsdkVPP
   mfxFrameAllocRequest request[2];
   GList* locked_in_surfaces;
   GList* locked_out_surfaces;
+
+  mfxVersion version;
 };
 
 struct _GstMsdkVPPClass

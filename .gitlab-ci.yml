@@ -379,7 +379,10 @@ build fedora gcc:
         #
         # VAAPI can't be build statically yet
         # subprojects/gstreamer-vaapi/meson.build:8:2: ERROR: Problem encountered: GStreamer-VAAPI plugin not supported with `static` builds yet.
-        MESON_ARGS: "${DEFAULT_MESON_ARGS} -Dvaapi=disabled -Dpython=auto -Dgst-editing-services:python=disabled -Dintrospection=disabled -Ddoc=disabled"
+        #
+        # Disabling gstreamer-sharp tests because they download things as part of configure with
+        # nuget which frequently fails on the CI (possibly because we're hammering the site)
+        MESON_ARGS: "${DEFAULT_MESON_ARGS} -Dvaapi=disabled -Dpython=auto -Dgst-editing-services:python=disabled -Dintrospection=disabled -Ddoc=disabled -Dgstreamer-sharp:tests=disabled"
 
 build fedora clang:
   extends: '.build fedora x86_64'
@@ -414,7 +417,10 @@ build fedora clang:
         #
         # VAAPI can't be build statically yet
         # subprojects/gstreamer-vaapi/meson.build:8:2: ERROR: Problem encountered: GStreamer-VAAPI plugin not supported with `static` builds yet.
-        MESON_ARGS: "${DEFAULT_MESON_ARGS} -Dvaapi=disabled -Dpython=auto -Dgst-editing-services:python=disabled -Dintrospection=disabled -Ddoc=disabled"
+        #
+        # Disabling gstreamer-sharp tests because they download things as part of configure with
+        # nuget which frequently fails on the CI (possibly because we're hammering the site)
+        MESON_ARGS: "${DEFAULT_MESON_ARGS} -Dvaapi=disabled -Dpython=auto -Dgst-editing-services:python=disabled -Dintrospection=disabled -Ddoc=disabled -Dgstreamer-sharp:tests=disabled"
 
 .build windows:
   image: $WINDOWS_IMAGE
@@ -633,6 +639,31 @@ integration testsuites fedora:
       -Dgst-plugins-bad:webrtc=disabled
     EXTRA_VALIDATE_ARGS: "--timeout-factor=2 --retry-on-failures --parts=${CI_NODE_TOTAL} --part-index=${CI_NODE_INDEX} --sync"
     TEST_SUITE: "validate ges"
+
+check video formats:
+  stage: 'test'
+  extends:
+    - '.fedora image'
+    - '.fdo.suffixed-image@fedora'
+    - '.build_ccache_vars'
+  needs:
+    - "trigger"
+    - "fedora amd64 docker"
+  tags: ['gstreamer']
+  variables:
+    MESON_ARGS: "${SIMPLE_BUILD}"
+    VIDEO_TOKEN: "GST_VIDEO_FORMATS_ALL_STR"
+    VIDEO_HEADER: "subprojects/gst-plugins-base/gst-libs/gst/video/video-format.h"
+    WL_TOKEN: "GST_WL_VIDEO_FORMATS"
+    WL_HEADER: "subprojects/gst-plugins-bad/gst-libs/gst/wayland/gstwlvideoformat.h"
+  script:
+    - *build
+    - meson devenv -C build -w . ./scripts/sort_video_formats.py ${VIDEO_TOKEN} ${VIDEO_HEADER}
+    - meson devenv -C build -w . ./scripts/sort_video_formats.py -b ${WL_TOKEN} ${WL_HEADER}
+  rules:
+    - changes:
+      - ${VIDEO_HEADER}
+      - ${WL_HEADER}
 
 playbin3 integration:
   extends: 'integration testsuites fedora'
