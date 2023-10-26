@@ -48,7 +48,6 @@ typedef struct _GstNvAV1Dec
 {
   GstAV1Decoder parent;
 
-  GstCudaContext *context;
   GstNvDecoder *decoder;
 
   GstAV1SequenceHeaderOBU seq_hdr;
@@ -80,6 +79,7 @@ typedef struct _GstNvAV1DecClass
 {
   GstAV1DecoderClass parent_class;
   guint cuda_device_id;
+  gint64 adapter_luid;
   guint max_width;
   guint max_height;
 } GstNvAV1DecClass;
@@ -103,6 +103,7 @@ static GTypeClass *parent_class = nullptr;
 #define GST_NV_AV1_DEC_GET_CLASS(object) \
     (G_TYPE_INSTANCE_GET_CLASS ((object),G_TYPE_FROM_INSTANCE (object),GstNvAV1DecClass))
 
+static void gst_nv_av1_dec_finalize (GObject * object);
 static void gst_nv_av1_dec_set_property (GObject * object, guint prop_id,
     const GValue * value, GParamSpec * pspec);
 static void gst_nv_av1_dec_get_property (GObject * object, guint prop_id,
@@ -116,6 +117,8 @@ static gboolean gst_nv_av1_dec_stop (GstVideoDecoder * decoder);
 static gboolean gst_nv_av1_dec_negotiate (GstVideoDecoder * decoder);
 static gboolean gst_nv_av1_dec_decide_allocation (GstVideoDecoder *
     decoder, GstQuery * query);
+static gboolean gst_nv_av1_dec_sink_query (GstVideoDecoder * decoder,
+    GstQuery * query);
 static gboolean gst_nv_av1_dec_src_query (GstVideoDecoder * decoder,
     GstQuery * query);
 static gboolean gst_nv_av1_dec_sink_event (GstVideoDecoder * decoder,
@@ -147,6 +150,7 @@ gst_nv_av1_dec_class_init (GstNvAV1DecClass * klass,
   GstVideoDecoderClass *decoder_class = GST_VIDEO_DECODER_CLASS (klass);
   GstAV1DecoderClass *av1decoder_class = GST_AV1_DECODER_CLASS (klass);
 
+  object_class->finalize = gst_nv_av1_dec_finalize;
   object_class->set_property = gst_nv_av1_dec_set_property;
   object_class->get_property = gst_nv_av1_dec_get_property;
 
@@ -237,6 +241,7 @@ gst_nv_av1_dec_class_init (GstNvAV1DecClass * klass,
   decoder_class->negotiate = GST_DEBUG_FUNCPTR (gst_nv_av1_dec_negotiate);
   decoder_class->decide_allocation =
       GST_DEBUG_FUNCPTR (gst_nv_av1_dec_decide_allocation);
+  decoder_class->sink_query = GST_DEBUG_FUNCPTR (gst_nv_av1_dec_sink_query);
   decoder_class->src_query = GST_DEBUG_FUNCPTR (gst_nv_av1_dec_src_query);
   decoder_class->sink_event = GST_DEBUG_FUNCPTR (gst_nv_av1_dec_sink_event);
 
@@ -258,6 +263,7 @@ gst_nv_av1_dec_class_init (GstNvAV1DecClass * klass,
       GST_DEBUG_FUNCPTR (gst_nv_av1_dec_get_preferred_output_delay);
 
   klass->cuda_device_id = cdata->cuda_device_id;
+  klass->adapter_luid = cdata->adapter_luid;
   klass->max_width = cdata->max_width;
   klass->max_height = cdata->max_height;
 
@@ -269,8 +275,23 @@ gst_nv_av1_dec_class_init (GstNvAV1DecClass * klass,
 static void
 gst_nv_av1_dec_init (GstNvAV1Dec * self)
 {
+  GstNvAV1DecClass *klass = GST_NV_AV1_DEC_GET_CLASS (self);
+
+  self->decoder =
+      gst_nv_decoder_new (klass->cuda_device_id, klass->adapter_luid);
+
   self->num_output_surfaces = DEFAULT_NUM_OUTPUT_SURFACES;
   self->max_display_delay = DEFAULT_MAX_DISPLAY_DELAY;
+}
+
+static void
+gst_nv_av1_dec_finalize (GObject * object)
+{
+  GstNvAV1Dec *self = GST_NV_AV1_DEC (object);
+
+  gst_object_unref (self->decoder);
+
+  G_OBJECT_CLASS (parent_class)->finalize (object);
 }
 
 static void
@@ -331,20 +352,9 @@ static void
 gst_nv_av1_dec_set_context (GstElement * element, GstContext * context)
 {
   GstNvAV1Dec *self = GST_NV_AV1_DEC (element);
-  GstNvAV1DecClass *klass = GST_NV_AV1_DEC_GET_CLASS (self);
 
-  GST_DEBUG_OBJECT (self, "set context %s",
-      gst_context_get_context_type (context));
+  gst_nv_decoder_handle_set_context (self->decoder, element, context);
 
-  if (gst_cuda_handle_set_context (element, context, klass->cuda_device_id,
-          &self->context)) {
-    goto done;
-  }
-
-  if (self->decoder)
-    gst_nv_decoder_handle_set_context (self->decoder, element, context);
-
-done:
   GST_ELEMENT_CLASS (parent_class)->set_context (element, context);
 }
 
@@ -352,23 +362,8 @@ static gboolean
 gst_nv_av1_dec_open (GstVideoDecoder * decoder)
 {
   GstNvAV1Dec *self = GST_NV_AV1_DEC (decoder);
-  GstNvAV1DecClass *klass = GST_NV_AV1_DEC_GET_CLASS (self);
 
-  if (!gst_cuda_ensure_element_context (GST_ELEMENT (self),
-          klass->cuda_device_id, &self->context)) {
-    GST_ERROR_OBJECT (self, "Required element data is unavailable");
-    return FALSE;
-  }
-
-  self->decoder = gst_nv_decoder_new (self->context);
-  if (!self->decoder) {
-    GST_ERROR_OBJECT (self, "Failed to create decoder object");
-    gst_clear_object (&self->context);
-
-    return FALSE;
-  }
-
-  return TRUE;
+  return gst_nv_decoder_open (self->decoder, GST_ELEMENT (decoder));
 }
 
 static void
@@ -388,9 +383,6 @@ gst_nv_av1_dec_close (GstVideoDecoder * decoder)
 {
   GstNvAV1Dec *self = GST_NV_AV1_DEC (decoder);
 
-  gst_clear_object (&self->decoder);
-  gst_clear_object (&self->context);
-
   gst_nv_av1_dec_reset_bitstream_params (self);
 
   g_free (self->bitstream_buffer);
@@ -402,7 +394,7 @@ gst_nv_av1_dec_close (GstVideoDecoder * decoder)
   self->bitstream_buffer_alloc_size = 0;
   self->tile_offsets_alloc_len = 0;
 
-  return TRUE;
+  return gst_nv_decoder_close (self->decoder);
 }
 
 static gboolean
@@ -413,8 +405,7 @@ gst_nv_av1_dec_stop (GstVideoDecoder * decoder)
 
   ret = GST_VIDEO_DECODER_CLASS (parent_class)->stop (decoder);
 
-  if (self->decoder)
-    gst_nv_decoder_reset (self->decoder);
+  gst_nv_decoder_reset (self->decoder);
 
   return ret;
 }
@@ -427,7 +418,8 @@ gst_nv_av1_dec_negotiate (GstVideoDecoder * decoder)
 
   GST_DEBUG_OBJECT (self, "negotiate");
 
-  gst_nv_decoder_negotiate (self->decoder, decoder, av1dec->input_state);
+  if (!gst_nv_decoder_negotiate (self->decoder, decoder, av1dec->input_state))
+    return FALSE;
 
   return GST_VIDEO_DECODER_CLASS (parent_class)->negotiate (decoder);
 }
@@ -447,23 +439,23 @@ gst_nv_av1_dec_decide_allocation (GstVideoDecoder * decoder, GstQuery * query)
 }
 
 static gboolean
+gst_nv_av1_dec_sink_query (GstVideoDecoder * decoder, GstQuery * query)
+{
+  GstNvAV1Dec *self = GST_NV_AV1_DEC (decoder);
+
+  if (gst_nv_decoder_handle_query (self->decoder, GST_ELEMENT (decoder), query))
+    return TRUE;
+
+  return GST_VIDEO_DECODER_CLASS (parent_class)->sink_query (decoder, query);
+}
+
+static gboolean
 gst_nv_av1_dec_src_query (GstVideoDecoder * decoder, GstQuery * query)
 {
   GstNvAV1Dec *self = GST_NV_AV1_DEC (decoder);
 
-  switch (GST_QUERY_TYPE (query)) {
-    case GST_QUERY_CONTEXT:
-      if (gst_cuda_handle_context_query (GST_ELEMENT (decoder), query,
-              self->context)) {
-        return TRUE;
-      } else if (self->decoder &&
-          gst_nv_decoder_handle_context_query (self->decoder, decoder, query)) {
-        return TRUE;
-      }
-      break;
-    default:
-      break;
-  }
+  if (gst_nv_decoder_handle_query (self->decoder, GST_ELEMENT (decoder), query))
+    return TRUE;
 
   return GST_VIDEO_DECODER_CLASS (parent_class)->src_query (decoder, query);
 }
@@ -472,9 +464,6 @@ static gboolean
 gst_nv_av1_dec_sink_event (GstVideoDecoder * decoder, GstEvent * event)
 {
   GstNvAV1Dec *self = GST_NV_AV1_DEC (decoder);
-
-  if (!self->decoder)
-    goto done;
 
   switch (GST_EVENT_TYPE (event)) {
     case GST_EVENT_FLUSH_START:
@@ -487,7 +476,6 @@ gst_nv_av1_dec_sink_event (GstVideoDecoder * decoder, GstEvent * event)
       break;
   }
 
-done:
   return GST_VIDEO_DECODER_CLASS (parent_class)->sink_event (decoder, event);
 }
 
@@ -553,8 +541,7 @@ gst_nv_av1_dec_new_sequence (GstAV1Decoder * decoder,
     }
 
     gst_video_info_set_format (&info,
-        out_format, GST_ROUND_UP_2 (self->max_width),
-        GST_ROUND_UP_2 (self->max_height));
+        out_format, self->max_width, self->max_height);
 
     max_width = gst_nv_decoder_get_max_output_size (self->max_width,
         self->init_max_width, klass->max_width);
@@ -1030,8 +1017,8 @@ gst_nv_av1_dec_get_preferred_output_delay (GstAV1Decoder * decoder,
 }
 
 void
-gst_nv_av1_dec_register (GstPlugin * plugin, guint device_id, guint rank,
-    GstCaps * sink_caps, GstCaps * src_caps)
+gst_nv_av1_dec_register (GstPlugin * plugin, guint device_id,
+    gint64 adapter_luid, guint rank, GstCaps * sink_caps, GstCaps * src_caps)
 {
   GType type;
   gchar *type_name;
@@ -1066,6 +1053,7 @@ gst_nv_av1_dec_register (GstPlugin * plugin, guint device_id, guint rank,
   cdata->sink_caps = gst_caps_ref (sink_caps);
   cdata->src_caps = gst_caps_ref (src_caps);
   cdata->cuda_device_id = device_id;
+  cdata->adapter_luid = adapter_luid;
 
   type_info.class_data = cdata;
 

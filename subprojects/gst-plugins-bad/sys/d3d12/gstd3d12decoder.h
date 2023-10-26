@@ -23,6 +23,7 @@
 #include <gst/video/video.h>
 #include <gst/codecs/gstcodecpicture.h>
 #include <gst/dxva/gstdxva.h>
+#include <gst/d3d11/gstd3d11.h>
 #include "gstd3d12_fwd.h"
 
 G_BEGIN_DECLS
@@ -45,7 +46,6 @@ struct GstD3D12DecoderSubClassData
   static GstElementClass *parent_class = NULL; \
   typedef struct _##ModuleObjName { \
     ParentName parent; \
-    GstD3D12Device *device; \
     GstD3D12Decoder *decoder; \
   } ModuleObjName;\
   typedef struct _##ModuleObjName##Class { \
@@ -58,6 +58,7 @@ struct GstD3D12DecoderSubClassData
   static inline ModuleObjName##Class * MODULE##_##OBJ_NAME##_GET_CLASS (gpointer ptr) { \
     return G_TYPE_INSTANCE_GET_CLASS ((ptr),G_TYPE_FROM_INSTANCE(ptr),ModuleObjName##Class); \
   } \
+  static void module_obj_name##_finalize (GObject * object); \
   static void module_obj_name##_get_property (GObject * object, \
       guint prop_id, GValue * value, GParamSpec * pspec); \
   static void module_obj_name##_set_context (GstElement * element, \
@@ -96,8 +97,13 @@ struct GstD3D12DecoderSubClassData
   static GstFlowReturn  module_obj_name##_duplicate_picture (ParentName * decoder, \
       GstCodecPicture * src, GstCodecPicture * dst);
 
-GstD3D12Decoder * gst_d3d12_decoder_new               (GstD3D12Device * device,
-                                                       GstDxvaCodec codec);
+GstD3D12Decoder * gst_d3d12_decoder_new               (GstDxvaCodec codec,
+                                                       gint64 adapter_luid);
+
+gboolean          gst_d3d12_decoder_open              (GstD3D12Decoder * decoder,
+                                                       GstElement * element);
+
+gboolean          gst_d3d12_decoder_close             (GstD3D12Decoder * decoder);
 
 GstFlowReturn     gst_d3d12_decoder_configure         (GstD3D12Decoder * decoder,
                                                        GstVideoCodecState * input_state,
@@ -146,10 +152,19 @@ gboolean          gst_d3d12_decoder_decide_allocation (GstD3D12Decoder * decoder
 void              gst_d3d12_decoder_sink_event        (GstD3D12Decoder * decoder,
                                                        GstEvent * event);
 
+void              gst_d3d12_decoder_set_context       (GstD3D12Decoder * decoder,
+                                                       GstElement * element,
+                                                       GstContext * context);
+
+gboolean          gst_d3d12_decoder_handle_query      (GstD3D12Decoder * decoder,
+                                                       GstElement * element,
+                                                       GstQuery * query);
+
 /* Utils for element registration */
 GstD3D12DecoderClassData * gst_d3d12_decoder_check_feature_support   (GstD3D12Device * device,
                                                                       ID3D12VideoDevice * video_device,
-                                                                      GstDxvaCodec codec);
+                                                                      GstDxvaCodec codec,
+                                                                      gboolean d3d11_interop);
 
 void  gst_d3d12_decoder_class_data_fill_subclass_data (GstD3D12DecoderClassData * data,
                                                        GstD3D12DecoderSubClassData * subclass_data);
@@ -163,10 +178,5 @@ void  gst_d3d12_decoder_proxy_get_property            (GObject * object,
                                                        GValue * value,
                                                        GParamSpec * pspec,
                                                        GstD3D12DecoderSubClassData * subclass_data);
-
-gboolean gst_d3d12_decoder_proxy_open                 (GstVideoDecoder * videodec,
-                                                       GstD3D12DecoderSubClassData * subclass_data,
-                                                       GstD3D12Device ** device,
-                                                       GstD3D12Decoder ** decoder);
 
 G_END_DECLS

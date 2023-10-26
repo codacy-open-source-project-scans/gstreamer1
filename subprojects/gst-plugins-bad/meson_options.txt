@@ -81,6 +81,7 @@ option('x11', type : 'feature', value : 'auto', description : 'X11 support in Vu
 
 # Feature options for plugins that need external deps
 option('aes', type : 'feature', value : 'auto', description : 'AES encryption/decryption plugin')
+option('aja', type : 'feature', value : 'auto', description : 'AJA audio/video source/sink plugin')
 option('aom', type : 'feature', value : 'auto', description : 'AOM AV1 video codec plugin')
 option('avtp', type : 'feature', value : 'auto', description : 'Audio/Video Transport Protocol (AVTP) plugin')
 option('amfcodec', type : 'feature', value : 'auto', description : 'AMD AMF codec plugin')
@@ -100,6 +101,7 @@ option('curl-ssh2', type : 'feature', value : 'auto', description : 'cURL networ
 option('d3dvideosink', type : 'feature', value : 'auto', description : 'Direct3D video sink plugin')
 option('d3d11', type : 'feature', value : 'auto', description : 'Direct3D11 plugin')
 option('d3d11-wgc', type : 'feature', value : 'auto', description : 'Windows Graphics Capture API support in d3d11 plugin')
+option('d3d11-hlsl-precompile', type : 'feature', value : 'auto', description : 'Enable buildtime HLSL compile for d3d11 library/plugin')
 option('d3d12', type : 'feature', value : 'auto', description : 'Direct3D12 plugin')
 option('dash', type : 'feature', value : 'auto', description : 'DASH demuxer plugin')
 option('dc1394', type : 'feature', value : 'auto', description : 'libdc1394 IIDC camera source plugin')
@@ -179,7 +181,7 @@ option('vulkan', type : 'feature', value : 'auto', description : 'Vulkan video s
 option('wasapi', type : 'feature', value : 'auto', description : 'Windows Audio Session API source/sink plugin')
 option('wasapi2', type : 'feature', value : 'auto', description : 'Windows Audio Session API source/sink plugin with WinRT API')
 option('webp', type : 'feature', value : 'auto', description : 'WebP image codec plugin')
-option('webrtc', type : 'feature', value : 'auto', description : 'WebRTC audio/video network bin plugin')
+option('webrtc', type : 'feature', value : 'auto', yield: true, description : 'WebRTC audio/video network bin plugin')
 option('webrtcdsp', type : 'feature', value : 'auto', description : 'Plugin with various audio filters provided by the WebRTC audio processing library')
 option('wildmidi', type : 'feature', value : 'auto', description : 'WildMidi midi soft synth plugin')
 option('wic', type : 'feature', value : 'auto', description : 'Windows Imaging Component plugin')
@@ -202,6 +204,10 @@ option('magicleap', type : 'feature', value : 'auto', description : 'Magic Leap 
 option('v4l2codecs', type : 'feature', value : 'auto', description : 'Video4Linux Stateless CODECs support')
 option('uvcgadget', type : 'feature', value : 'auto', description : 'uvc video gadget plugin')
 option('isac', type : 'feature', value : 'auto', description : 'iSAC plugin')
+
+# AJA plugin options
+option('aja-sdk-dir', type : 'string', value : '',
+  description : 'Directory with AJA SDK, e.g. ntv2sdklinux_16.0.0.4')
 
 # HLS plugin options
 option('hls', type : 'feature', value : 'auto', description : 'HTTP Live Streaming plugin')

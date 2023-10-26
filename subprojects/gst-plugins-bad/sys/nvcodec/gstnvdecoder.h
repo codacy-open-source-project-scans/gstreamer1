@@ -38,11 +38,18 @@ typedef struct _GstNvDecoderClassData
   GstCaps *sink_caps;
   GstCaps *src_caps;
   guint cuda_device_id;
+  gint64 adapter_luid;
   guint max_width;
   guint max_height;
 } GstNvDecoderClassData;
 
-GstNvDecoder * gst_nv_decoder_new (GstCudaContext * context);
+GstNvDecoder * gst_nv_decoder_new (guint device_id,
+                                   gint64 adapter_luid);
+
+gboolean       gst_nv_decoder_open (GstNvDecoder * decoder,
+                                    GstElement * element);
+
+gboolean       gst_nv_decoder_close (GstNvDecoder * decoder);
 
 gboolean       gst_nv_decoder_is_configured (GstNvDecoder * decoder);
 
@@ -84,12 +91,12 @@ gboolean gst_nv_decoder_check_device_caps (CUcontext cuda_ctx,
 const gchar * gst_cuda_video_codec_to_string (cudaVideoCodec codec);
 
 /* helper methods */
-gboolean gst_nv_decoder_handle_set_context   (GstNvDecoder * decoder,
-                                              GstElement * videodec,
+void     gst_nv_decoder_handle_set_context   (GstNvDecoder * decoder,
+                                              GstElement * element,
                                               GstContext * context);
 
-gboolean gst_nv_decoder_handle_context_query (GstNvDecoder * decoder,
-                                              GstVideoDecoder * videodec,
+gboolean gst_nv_decoder_handle_query         (GstNvDecoder * decoder,
+                                              GstElement * element,
                                               GstQuery * query);
 
 gboolean gst_nv_decoder_negotiate            (GstNvDecoder * decoder,

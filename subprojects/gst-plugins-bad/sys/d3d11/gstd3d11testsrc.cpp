@@ -189,6 +189,21 @@ enum
 
 typedef struct
 {
+  FLOAT time;
+  FLOAT alpha;
+  FLOAT padding[2];
+} SnowConstBuffer;
+
+typedef struct
+{
+  FLOAT width;
+  FLOAT height;
+  FLOAT checker_size;
+  FLOAT alpha;
+} CheckerConstBuffer;
+
+typedef struct
+{
   ID3D11PixelShader *ps;
   ID3D11VertexShader *vs;
   ID3D11InputLayout *layout;
@@ -197,6 +212,10 @@ typedef struct
   ID3D11Buffer *const_buffer;
   guint vertex_stride;
   guint index_count;
+  gboolean is_checker;
+  gboolean is_snow;
+  CheckerConstBuffer checker_const_buffer;
+  SnowConstBuffer snow_const_buffer;
 } GstD3D11TestSrcQuad;
 
 typedef struct
@@ -242,12 +261,6 @@ struct _GstD3D11TestSrc
 
 typedef struct
 {
-  FLOAT time;
-  FLOAT padding[3];
-} TimeConstBuffer;
-
-typedef struct
-{
   struct
   {
     FLOAT x;
@@ -278,95 +291,11 @@ typedef struct
   } color;
 } ColorVertexData;
 
-/* *INDENT-OFF* */
-static const gchar templ_vs_coord[] =
-    "struct VS_INPUT {\n"
-    "  float4 Position: POSITION;\n"
-    "  float2 Texture: TEXCOORD;\n"
-    "};\n"
-    "struct VS_OUTPUT {\n"
-    "  float4 Position: SV_POSITION;\n"
-    "  float2 Texture: TEXCOORD;\n"
-    "};\n"
-    "VS_OUTPUT main (VS_INPUT input)\n"
-    "{\n"
-    "  return input;\n"
-    "}";
-
-static const gchar templ_vs_color[] =
-    "struct VS_INPUT {\n"
-    "  float4 Position: POSITION;\n"
-    "  float4 Color: COLOR;\n"
-    "};\n"
-    "struct VS_OUTPUT {\n"
-    "  float4 Position: SV_POSITION;\n"
-    "  float4 Color: COLOR;\n"
-    "};\n"
-    "VS_OUTPUT main (VS_INPUT input)\n"
-    "{\n"
-    "  return input;\n"
-    "}";
-
-static const gchar templ_ps_snow[] =
-    "cbuffer TimeConstBuffer : register(b0)\n"
-    "{\n"
-    "  float time;\n"
-    "  float3 padding;\n"
-    "}\n"
-    "struct PS_INPUT {\n"
-    "  float4 Position: SV_POSITION;\n"
-    "  float2 Texture: TEXCOORD;\n"
-    "};\n"
-    "float get_rand(float2 uv)\n"
-    "{\n"
-    "  return frac(sin(dot(uv, float2(12.9898,78.233))) * 43758.5453);\n"
-    "}\n"
-    "float4 main(PS_INPUT input) : SV_Target\n"
-    "{\n"
-    "  float4 output;\n"
-    "  float val = get_rand (time * input.Texture);\n"
-    "  output.rgb = float3(val, val, val);\n"
-    "  output.a = %s;\n"
-    "  return output;\n"
-    "}";
-
-static const gchar templ_ps_smpte[] =
-    "struct PS_INPUT {\n"
-    "  float4 Position: SV_POSITION;\n"
-    "  float4 Color: COLOR;\n"
-    "};\n"
-    "float4 main(PS_INPUT input) : SV_TARGET\n"
-    "{\n"
-    "  return input.Color;\n"
-    "}";
-
-static const gchar templ_ps_checker[] =
-    "static const float width = %d;\n"
-    "static const float height = %d;\n"
-    "static const float checker_size = %d;\n"
-    "struct PS_INPUT {\n"
-    "  float4 Position: SV_POSITION;\n"
-    "  float2 Texture: TEXCOORD;\n"
-    "};\n"
-    "float4 main(PS_INPUT input) : SV_Target\n"
-    "{\n"
-    "  float4 output;\n"
-    "  float2 xy_mod = floor (0.5 * input.Texture * float2 (width, height) / checker_size);\n"
-    "  float result = fmod (xy_mod.x + xy_mod.y, 2.0);\n"
-    "  output.r = step (result, 0.5);\n"
-    "  output.g = 1.0 - output.r;\n"
-    "  output.b = 0;\n"
-    "  output.a = %s;\n"
-    "  return output;\n"
-    "}";
-/* *INDENT-ON* */
-
 static gboolean
 setup_snow_render (GstD3D11TestSrc * self, GstD3D11TestSrcRender * render,
     guint on_smpte)
 {
   HRESULT hr;
-  D3D11_INPUT_ELEMENT_DESC input_desc[2];
   D3D11_BUFFER_DESC buffer_desc;
   D3D11_MAPPED_SUBRESOURCE map;
   UvVertexData *vertex_data;
@@ -382,39 +311,16 @@ setup_snow_render (GstD3D11TestSrc * self, GstD3D11TestSrcRender * render,
   ComPtr < ID3D11Buffer > index_buffer;
   ComPtr < ID3D11Buffer > const_buffer;
   GstD3D11TestSrcQuad *quad;
-  gchar *ps_src;
-  gchar float_str_buf[G_ASCII_DTOSTR_BUF_SIZE];
 
-  memset (input_desc, 0, sizeof (input_desc));
   memset (&buffer_desc, 0, sizeof (buffer_desc));
 
-  input_desc[0].SemanticName = "POSITION";
-  input_desc[0].SemanticIndex = 0;
-  input_desc[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
-  input_desc[0].InputSlot = 0;
-  input_desc[0].AlignedByteOffset = D3D11_APPEND_ALIGNED_ELEMENT;
-  input_desc[0].InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
-  input_desc[0].InstanceDataStepRate = 0;
-
-  input_desc[1].SemanticName = "TEXCOORD";
-  input_desc[1].SemanticIndex = 0;
-  input_desc[1].Format = DXGI_FORMAT_R32G32_FLOAT;
-  input_desc[1].InputSlot = 0;
-  input_desc[1].AlignedByteOffset = D3D11_APPEND_ALIGNED_ELEMENT;
-  input_desc[1].InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
-  input_desc[1].InstanceDataStepRate = 0;
-
-  hr = gst_d3d11_create_vertex_shader_simple (self->device, templ_vs_coord,
-      "main", input_desc, G_N_ELEMENTS (input_desc), &vs, &layout);
+  hr = gst_d3d11_get_vertex_shader_coord (self->device, &vs, &layout);
   if (!gst_d3d11_result (hr, self->device)) {
     GST_ERROR_OBJECT (self, "Failed to compile vertext shader");
     return FALSE;
   }
 
-  g_ascii_formatd (float_str_buf, G_ASCII_DTOSTR_BUF_SIZE, "%f", self->alpha);
-  ps_src = g_strdup_printf (templ_ps_snow, float_str_buf);
-  hr = gst_d3d11_create_pixel_shader_simple (self->device, ps_src, "main", &ps);
-  g_free (ps_src);
+  hr = gst_d3d11_get_pixel_shader_snow (self->device, &ps);
   if (!gst_d3d11_result (hr, self->device)) {
     GST_ERROR_OBJECT (self, "Failed to compile pixel shader");
     return FALSE;
@@ -443,7 +349,7 @@ setup_snow_render (GstD3D11TestSrc * self, GstD3D11TestSrcRender * render,
   }
 
   buffer_desc.Usage = D3D11_USAGE_DYNAMIC;
-  buffer_desc.ByteWidth = sizeof (TimeConstBuffer);
+  buffer_desc.ByteWidth = sizeof (SnowConstBuffer);
   buffer_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
   buffer_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
   hr = device_handle->CreateBuffer (&buffer_desc, nullptr, &const_buffer);
@@ -566,6 +472,9 @@ setup_snow_render (GstD3D11TestSrc * self, GstD3D11TestSrcRender * render,
   quad->const_buffer = const_buffer.Detach ();
   quad->vertex_stride = sizeof (UvVertexData);
   quad->index_count = 6;
+  quad->is_snow = TRUE;
+  quad->snow_const_buffer.time = 0;
+  quad->snow_const_buffer.alpha = self->alpha;
 
   return TRUE;
 }
@@ -574,7 +483,6 @@ static gboolean
 setup_smpte_render (GstD3D11TestSrc * self, GstD3D11TestSrcRender * render)
 {
   HRESULT hr;
-  D3D11_INPUT_ELEMENT_DESC input_desc[2];
   D3D11_BUFFER_DESC buffer_desc;
   D3D11_MAPPED_SUBRESOURCE map;
   ColorVertexData *vertex_data;
@@ -592,34 +500,15 @@ setup_smpte_render (GstD3D11TestSrc * self, GstD3D11TestSrcRender * render)
   guint num_vertex = 0;
   guint num_index = 0;
 
-  memset (input_desc, 0, sizeof (input_desc));
   memset (&buffer_desc, 0, sizeof (buffer_desc));
 
-  input_desc[0].SemanticName = "POSITION";
-  input_desc[0].SemanticIndex = 0;
-  input_desc[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
-  input_desc[0].InputSlot = 0;
-  input_desc[0].AlignedByteOffset = D3D11_APPEND_ALIGNED_ELEMENT;
-  input_desc[0].InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
-  input_desc[0].InstanceDataStepRate = 0;
-
-  input_desc[1].SemanticName = "COLOR";
-  input_desc[1].SemanticIndex = 0;
-  input_desc[1].Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-  input_desc[1].InputSlot = 0;
-  input_desc[1].AlignedByteOffset = D3D11_APPEND_ALIGNED_ELEMENT;
-  input_desc[1].InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
-  input_desc[1].InstanceDataStepRate = 0;
-
-  hr = gst_d3d11_create_vertex_shader_simple (self->device, templ_vs_color,
-      "main", input_desc, G_N_ELEMENTS (input_desc), &vs, &layout);
+  hr = gst_d3d11_get_vertex_shader_color (self->device, &vs, &layout);
   if (!gst_d3d11_result (hr, self->device)) {
     GST_ERROR_OBJECT (self, "Failed to compile vertext shader");
     return FALSE;
   }
 
-  hr = gst_d3d11_create_pixel_shader_simple (self->device,
-      templ_ps_smpte, "main", &ps);
+  hr = gst_d3d11_get_pixel_shader_color (self->device, &ps);
   if (!gst_d3d11_result (hr, self->device)) {
     GST_ERROR_OBJECT (self, "Failed to compile pixel shader");
     return FALSE;
@@ -923,7 +812,6 @@ setup_checker_render (GstD3D11TestSrc * self, GstD3D11TestSrcRender * render,
     guint checker_size)
 {
   HRESULT hr;
-  D3D11_INPUT_ELEMENT_DESC input_desc[2];
   D3D11_BUFFER_DESC buffer_desc;
   D3D11_MAPPED_SUBRESOURCE map;
   UvVertexData *vertex_data;
@@ -937,42 +825,18 @@ setup_checker_render (GstD3D11TestSrc * self, GstD3D11TestSrcRender * render,
   ComPtr < ID3D11InputLayout > layout;
   ComPtr < ID3D11Buffer > vertex_buffer;
   ComPtr < ID3D11Buffer > index_buffer;
+  ComPtr < ID3D11Buffer > const_buffer;
   GstD3D11TestSrcQuad *quad;
-  gchar *ps_src;
-  gchar float_str_buf[G_ASCII_DTOSTR_BUF_SIZE];
 
-  memset (input_desc, 0, sizeof (input_desc));
   memset (&buffer_desc, 0, sizeof (buffer_desc));
 
-  input_desc[0].SemanticName = "POSITION";
-  input_desc[0].SemanticIndex = 0;
-  input_desc[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
-  input_desc[0].InputSlot = 0;
-  input_desc[0].AlignedByteOffset = D3D11_APPEND_ALIGNED_ELEMENT;
-  input_desc[0].InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
-  input_desc[0].InstanceDataStepRate = 0;
-
-  input_desc[1].SemanticName = "TEXCOORD";
-  input_desc[1].SemanticIndex = 0;
-  input_desc[1].Format = DXGI_FORMAT_R32G32_FLOAT;
-  input_desc[1].InputSlot = 0;
-  input_desc[1].AlignedByteOffset = D3D11_APPEND_ALIGNED_ELEMENT;
-  input_desc[1].InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
-  input_desc[1].InstanceDataStepRate = 0;
-
-  hr = gst_d3d11_create_vertex_shader_simple (self->device, templ_vs_coord,
-      "main", input_desc, G_N_ELEMENTS (input_desc), &vs, &layout);
+  hr = gst_d3d11_get_vertex_shader_coord (self->device, &vs, &layout);
   if (!gst_d3d11_result (hr, self->device)) {
     GST_ERROR_OBJECT (self, "Failed to compile vertext shader");
     return FALSE;
   }
 
-  g_ascii_formatd (float_str_buf, G_ASCII_DTOSTR_BUF_SIZE, "%f", self->alpha);
-
-  ps_src = g_strdup_printf (templ_ps_checker,
-      self->info.width, self->info.height, checker_size, float_str_buf);
-  hr = gst_d3d11_create_pixel_shader_simple (self->device, ps_src, "main", &ps);
-  g_free (ps_src);
+  hr = gst_d3d11_get_pixel_shader_checker (self->device, &ps);
   if (!gst_d3d11_result (hr, self->device)) {
     GST_ERROR_OBJECT (self, "Failed to compile pixel shader");
     return FALSE;
@@ -997,6 +861,16 @@ setup_checker_render (GstD3D11TestSrc * self, GstD3D11TestSrcRender * render,
   hr = device_handle->CreateBuffer (&buffer_desc, nullptr, &index_buffer);
   if (!gst_d3d11_result (hr, self->device)) {
     GST_ERROR_OBJECT (self, "Failed to create index buffer");
+    return FALSE;
+  }
+
+  buffer_desc.Usage = D3D11_USAGE_DYNAMIC;
+  buffer_desc.ByteWidth = sizeof (CheckerConstBuffer);
+  buffer_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+  buffer_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+  hr = device_handle->CreateBuffer (&buffer_desc, nullptr, &const_buffer);
+  if (!gst_d3d11_result (hr, self->device)) {
+    GST_ERROR_OBJECT (self, "Failed to create constant buffer");
     return FALSE;
   }
 
@@ -1064,8 +938,14 @@ setup_checker_render (GstD3D11TestSrc * self, GstD3D11TestSrcRender * render,
   quad->layout = layout.Detach ();
   quad->vertex_buffer = vertex_buffer.Detach ();
   quad->index_buffer = index_buffer.Detach ();
+  quad->const_buffer = const_buffer.Detach ();
   quad->vertex_stride = sizeof (UvVertexData);
   quad->index_count = 6;
+  quad->is_checker = TRUE;
+  quad->checker_const_buffer.width = self->info.width;
+  quad->checker_const_buffer.height = self->info.height;
+  quad->checker_const_buffer.checker_size = checker_size;
+  quad->checker_const_buffer.alpha = self->alpha;
 
   return TRUE;
 }
@@ -1419,7 +1299,17 @@ gst_d3d11_test_src_setup_resource (GstD3D11TestSrc * self, GstCaps * caps)
 
   config = gst_structure_new ("converter-config",
       GST_D3D11_CONVERTER_OPT_BACKEND, GST_TYPE_D3D11_CONVERTER_BACKEND,
-      GST_D3D11_CONVERTER_BACKEND_SHADER, nullptr);
+      GST_D3D11_CONVERTER_BACKEND_SHADER,
+      GST_D3D11_CONVERTER_OPT_DEST_ALPHA_MODE,
+      GST_TYPE_D3D11_CONVERTER_ALPHA_MODE, self->alpha_mode, nullptr);
+
+  /* D2D uses premultiplied alpha */
+  if (self->pattern == GST_D3D11_TEST_SRC_CIRCULAR ||
+      self->pattern == GST_D3D11_TEST_SRC_BALL) {
+    gst_structure_set (config, GST_D3D11_CONVERTER_OPT_SRC_ALPHA_MODE,
+        GST_TYPE_D3D11_CONVERTER_ALPHA_MODE,
+        GST_D3D11_CONVERTER_ALPHA_MODE_PREMULTIPLIED, nullptr);
+  }
 
   gst_video_info_set_format (&draw_info, GST_VIDEO_FORMAT_BGRA,
       self->info.width, self->info.height);
@@ -1430,15 +1320,6 @@ gst_d3d11_test_src_setup_resource (GstD3D11TestSrc * self, GstCaps * caps)
     GST_ERROR_OBJECT (self, "Failed to create converter");
     goto error;
   }
-
-  /* D2D uses premultiplied alpha */
-  if (self->pattern == GST_D3D11_TEST_SRC_CIRCULAR ||
-      self->pattern == GST_D3D11_TEST_SRC_BALL) {
-    g_object_set (self->converter, "src-alpha-mode",
-        GST_D3D11_CONVERTER_ALPHA_MODE_PREMULTIPLIED, nullptr);
-  }
-
-  g_object_set (self->converter, "dest-alpha-mode", self->alpha_mode, nullptr);
 
   draw_caps = gst_video_info_to_caps (&draw_info);
   params = gst_d3d11_allocation_params_new (self->device, &draw_info,
@@ -1996,7 +1877,6 @@ gst_d3d11_test_src_draw_pattern (GstD3D11TestSrc * self,
 {
   GstD3D11TestSrcRender *render = self->render;
   HRESULT hr;
-  TimeConstBuffer *time_buf;
   D3D11_MAPPED_SUBRESOURCE map;
   UINT offsets = 0;
 
@@ -2032,8 +1912,17 @@ gst_d3d11_test_src_draw_pattern (GstD3D11TestSrc * self,
         return FALSE;
       }
 
-      time_buf = (TimeConstBuffer *) map.pData;
-      time_buf->time = (FLOAT) pts / GST_SECOND;
+      if (quad->is_snow) {
+        SnowConstBuffer *const_buf = (SnowConstBuffer *) map.pData;
+        const_buf->time = (FLOAT) pts / GST_SECOND;
+        const_buf->alpha = self->alpha;
+      } else if (quad->is_checker) {
+        CheckerConstBuffer *const_buf = (CheckerConstBuffer *) map.pData;
+        quad->checker_const_buffer.alpha = self->alpha;
+        memcpy (const_buf, &quad->checker_const_buffer,
+            sizeof (CheckerConstBuffer));
+      }
+
       context->Unmap (quad->const_buffer, 0);
 
       context->PSSetConstantBuffers (0, 1, &quad->const_buffer);

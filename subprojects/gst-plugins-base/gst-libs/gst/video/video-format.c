@@ -3252,6 +3252,110 @@ pack_GBR_12BE (const GstVideoFormatInfo * info, GstVideoPackFlags flags,
   }
 }
 
+#define PACK_GBR_16LE GST_VIDEO_FORMAT_ARGB64, unpack_GBR_16LE, 1, pack_GBR_16LE
+static void
+unpack_GBR_16LE (const GstVideoFormatInfo * info, GstVideoPackFlags flags,
+    gpointer dest, const gpointer data[GST_VIDEO_MAX_PLANES],
+    const gint stride[GST_VIDEO_MAX_PLANES], gint x, gint y, gint width)
+{
+  int i;
+  const guint16 *sg = GET_G_LINE (y);
+  const guint16 *sb = GET_B_LINE (y);
+  const guint16 *sr = GET_R_LINE (y);
+  guint16 *d = dest, G, B, R;
+
+  sg += x;
+  sb += x;
+  sr += x;
+
+  for (i = 0; i < width; i++) {
+    G = GST_READ_UINT16_LE (sg + i);
+    B = GST_READ_UINT16_LE (sb + i);
+    R = GST_READ_UINT16_LE (sr + i);
+
+    d[i * 4 + 0] = 0xffff;
+    d[i * 4 + 1] = R;
+    d[i * 4 + 2] = G;
+    d[i * 4 + 3] = B;
+  }
+}
+
+static void
+pack_GBR_16LE (const GstVideoFormatInfo * info, GstVideoPackFlags flags,
+    const gpointer src, gint sstride, gpointer data[GST_VIDEO_MAX_PLANES],
+    const gint stride[GST_VIDEO_MAX_PLANES], GstVideoChromaSite chroma_site,
+    gint y, gint width)
+{
+  int i;
+  guint16 *restrict dg = GET_G_LINE (y);
+  guint16 *restrict db = GET_B_LINE (y);
+  guint16 *restrict dr = GET_R_LINE (y);
+  guint16 G, B, R;
+  const guint16 *restrict s = src;
+
+  for (i = 0; i < width; i++) {
+    G = (s[i * 4 + 2]);
+    B = (s[i * 4 + 3]);
+    R = (s[i * 4 + 1]);
+
+    GST_WRITE_UINT16_LE (dg + i, G);
+    GST_WRITE_UINT16_LE (db + i, B);
+    GST_WRITE_UINT16_LE (dr + i, R);
+  }
+}
+
+#define PACK_GBR_16BE GST_VIDEO_FORMAT_ARGB64, unpack_GBR_16BE, 1, pack_GBR_16BE
+static void
+unpack_GBR_16BE (const GstVideoFormatInfo * info, GstVideoPackFlags flags,
+    gpointer dest, const gpointer data[GST_VIDEO_MAX_PLANES],
+    const gint stride[GST_VIDEO_MAX_PLANES], gint x, gint y, gint width)
+{
+  int i;
+  const guint16 *restrict sg = GET_G_LINE (y);
+  const guint16 *restrict sb = GET_B_LINE (y);
+  const guint16 *restrict sr = GET_R_LINE (y);
+  guint16 *restrict d = dest, G, B, R;
+
+  sg += x;
+  sb += x;
+  sr += x;
+
+  for (i = 0; i < width; i++) {
+    G = GST_READ_UINT16_BE (sg + i);
+    B = GST_READ_UINT16_BE (sb + i);
+    R = GST_READ_UINT16_BE (sr + i);
+
+    d[i * 4 + 0] = 0xffff;
+    d[i * 4 + 1] = R;
+    d[i * 4 + 2] = G;
+    d[i * 4 + 3] = B;
+  }
+}
+
+static void
+pack_GBR_16BE (const GstVideoFormatInfo * info, GstVideoPackFlags flags,
+    const gpointer src, gint sstride, gpointer data[GST_VIDEO_MAX_PLANES],
+    const gint stride[GST_VIDEO_MAX_PLANES], GstVideoChromaSite chroma_site,
+    gint y, gint width)
+{
+  int i;
+  guint16 *restrict dg = GET_G_LINE (y);
+  guint16 *restrict db = GET_B_LINE (y);
+  guint16 *restrict dr = GET_R_LINE (y);
+  guint16 G, B, R;
+  const guint16 *restrict s = src;
+
+  for (i = 0; i < width; i++) {
+    G = s[i * 4 + 2];
+    B = s[i * 4 + 3];
+    R = s[i * 4 + 1];
+
+    GST_WRITE_UINT16_BE (dg + i, G);
+    GST_WRITE_UINT16_BE (db + i, B);
+    GST_WRITE_UINT16_BE (dr + i, R);
+  }
+}
+
 #define PACK_GBRA_12LE GST_VIDEO_FORMAT_ARGB64, unpack_GBRA_12LE, 1, pack_GBRA_12LE
 static void
 unpack_GBRA_12LE (const GstVideoFormatInfo * info, GstVideoPackFlags flags,
@@ -7647,6 +7751,10 @@ static const VideoFormat formats[] = {
       PSTR2222, PLANE0123, OFFS0, SUB4204, PACK_A420_16LE),
   MAKE_YUVA_FORMAT (A420_16BE, "raw video", 0x00000000, DPTH16_16_16_16,
       PSTR2222, PLANE0123, OFFS0, SUB4204, PACK_A420_16BE),
+  MAKE_RGB_LE_FORMAT (GBR_16LE, "raw video", DPTH16_16_16, PSTR222, PLANE201,
+      OFFS0, SUB444, PACK_GBR_16LE),
+  MAKE_RGB_FORMAT (GBR_16BE, "raw video", DPTH16_16_16, PSTR222, PLANE201,
+      OFFS0, SUB444, PACK_GBR_16BE),
 };
 
 G_GNUC_END_IGNORE_DEPRECATIONS;
@@ -7933,6 +8041,7 @@ gst_video_format_from_string (const gchar * format)
     if (strcmp (GST_VIDEO_FORMAT_INFO_NAME (&formats[i].info), format) == 0)
       return GST_VIDEO_FORMAT_INFO_FORMAT (&formats[i].info);
   }
+
   return GST_VIDEO_FORMAT_UNKNOWN;
 }
 
@@ -8096,8 +8205,8 @@ struct RawVideoFormats
   guint n;
 };
 
-static gpointer
-generate_raw_video_formats (gpointer data)
+static struct RawVideoFormats *
+generate_video_formats (const gchar * formats)
 {
   GValue list = G_VALUE_INIT;
   struct RawVideoFormats *all = g_new (struct RawVideoFormats, 1);
@@ -8109,7 +8218,7 @@ generate_raw_video_formats (gpointer data)
   /* Workaround a bug in our parser that would lead to segfaults
    * when deserializing container types using static strings,
    * see https://gitlab.freedesktop.org/gstreamer/gstreamer/-/issues/446 */
-  tmp = g_strdup (GST_VIDEO_FORMATS_ALL);
+  tmp = g_strdup (formats);
   res = gst_value_deserialize (&list, tmp);
   g_assert (res);
   g_free (tmp);
@@ -8122,13 +8231,24 @@ generate_raw_video_formats (gpointer data)
 
     all->formats[i] = gst_video_format_from_string (g_value_get_string (v));
     g_assert (all->formats[i] != GST_VIDEO_FORMAT_UNKNOWN
-        && all->formats[i] != GST_VIDEO_FORMAT_ENCODED
-        && all->formats[i] != GST_VIDEO_FORMAT_DMA_DRM);
+        && all->formats[i] != GST_VIDEO_FORMAT_ENCODED);
   }
 
   g_value_unset (&list);
 
   return all;
+}
+
+static gpointer
+generate_raw_video_formats (gpointer data)
+{
+  return generate_video_formats (GST_VIDEO_FORMATS_ALL);
+}
+
+static gpointer
+generate_any_video_formats (gpointer data)
+{
+  return generate_video_formats (GST_VIDEO_FORMATS_ANY);
 }
 
 /**
@@ -8151,6 +8271,33 @@ gst_video_formats_raw (guint * len)
   g_once (&raw_video_formats_once, generate_raw_video_formats, NULL);
 
   all = raw_video_formats_once.retval;
+  *len = all->n;
+  return all->formats;
+}
+
+/**
+ * gst_video_formats_any:
+ * @len: (out): the number of elements in the returned array
+ *
+ * Return all the raw video formats supported by GStreamer including
+ * special opaque formats such as %GST_VIDEO_FORMAT_DMA_DRM for which
+ * no software conversion exists. This should be use for passthrough
+ * template cpas.
+ *
+ * Returns: (transfer none) (array length=len): an array of #GstVideoFormat
+ * Since: 1.24
+ */
+const GstVideoFormat *
+gst_video_formats_any (guint * len)
+{
+  static GOnce any_video_formats_once = G_ONCE_INIT;
+  struct RawVideoFormats *all;
+
+  g_return_val_if_fail (len, NULL);
+
+  g_once (&any_video_formats_once, generate_any_video_formats, NULL);
+
+  all = any_video_formats_once.retval;
   *len = all->n;
   return all->formats;
 }
@@ -8210,8 +8357,7 @@ gst_video_make_raw_caps_with_features (const GstVideoFormat formats[],
       GValue v = G_VALUE_INIT;
 
       g_return_val_if_fail (formats[i] != GST_VIDEO_FORMAT_UNKNOWN
-          && formats[i] != GST_VIDEO_FORMAT_ENCODED
-          && formats[i] != GST_VIDEO_FORMAT_DMA_DRM, NULL);
+          && formats[i] != GST_VIDEO_FORMAT_ENCODED, NULL);
 
       g_value_init (&v, G_TYPE_STRING);
       g_value_set_static_string (&v, gst_video_format_to_string (formats[i]));

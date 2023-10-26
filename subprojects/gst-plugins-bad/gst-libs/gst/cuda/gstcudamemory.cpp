@@ -195,6 +195,7 @@ gst_cuda_allocator_update_info (const GstVideoInfo * reference,
     case GST_VIDEO_FORMAT_I420:
     case GST_VIDEO_FORMAT_YV12:
     case GST_VIDEO_FORMAT_I420_10LE:
+    case GST_VIDEO_FORMAT_I420_12LE:
       /* we are wasting space yes, but required so that this memory
        * can be used in kernel function */
       ret.stride[0] = pitch;
@@ -217,6 +218,7 @@ gst_cuda_allocator_update_info (const GstVideoInfo * reference,
     case GST_VIDEO_FORMAT_NV12:
     case GST_VIDEO_FORMAT_NV21:
     case GST_VIDEO_FORMAT_P010_10LE:
+    case GST_VIDEO_FORMAT_P012_LE:
     case GST_VIDEO_FORMAT_P016_LE:
       ret.stride[0] = pitch;
       ret.stride[1] = pitch;
@@ -224,10 +226,15 @@ gst_cuda_allocator_update_info (const GstVideoInfo * reference,
       ret.offset[1] = ret.stride[0] * height;
       break;
     case GST_VIDEO_FORMAT_Y444:
+    case GST_VIDEO_FORMAT_Y444_10LE:
+    case GST_VIDEO_FORMAT_Y444_12LE:
     case GST_VIDEO_FORMAT_Y444_16LE:
     case GST_VIDEO_FORMAT_RGBP:
     case GST_VIDEO_FORMAT_BGRP:
     case GST_VIDEO_FORMAT_GBR:
+    case GST_VIDEO_FORMAT_GBR_10LE:
+    case GST_VIDEO_FORMAT_GBR_12LE:
+    case GST_VIDEO_FORMAT_GBR_16LE:
       ret.stride[0] = pitch;
       ret.stride[1] = pitch;
       ret.stride[2] = pitch;
@@ -729,9 +736,13 @@ static const TextureFormat format_map[] = {
   MAKE_FORMAT_YUV_SEMI_PLANAR (NV12, UNSIGNED_INT8),
   MAKE_FORMAT_YUV_SEMI_PLANAR (NV21, UNSIGNED_INT8),
   MAKE_FORMAT_YUV_SEMI_PLANAR (P010_10LE, UNSIGNED_INT16),
+  MAKE_FORMAT_YUV_SEMI_PLANAR (P012_LE, UNSIGNED_INT16),
   MAKE_FORMAT_YUV_SEMI_PLANAR (P016_LE, UNSIGNED_INT16),
   MAKE_FORMAT_YUV_PLANAR (I420_10LE, UNSIGNED_INT16),
+  MAKE_FORMAT_YUV_PLANAR (I420_12LE, UNSIGNED_INT16),
   MAKE_FORMAT_YUV_PLANAR (Y444, UNSIGNED_INT8),
+  MAKE_FORMAT_YUV_PLANAR (Y444_10LE, UNSIGNED_INT16),
+  MAKE_FORMAT_YUV_PLANAR (Y444_12LE, UNSIGNED_INT16),
   MAKE_FORMAT_YUV_PLANAR (Y444_16LE, UNSIGNED_INT16),
   MAKE_FORMAT_RGB (RGBA, UNSIGNED_INT8),
   MAKE_FORMAT_RGB (BGRA, UNSIGNED_INT8),
@@ -746,6 +757,9 @@ static const TextureFormat format_map[] = {
   MAKE_FORMAT_RGBP (RGBP, UNSIGNED_INT8),
   MAKE_FORMAT_RGBP (BGRP, UNSIGNED_INT8),
   MAKE_FORMAT_RGBP (GBR, UNSIGNED_INT8),
+  MAKE_FORMAT_RGBP (GBR_10LE, UNSIGNED_INT16),
+  MAKE_FORMAT_RGBP (GBR_12LE, UNSIGNED_INT16),
+  MAKE_FORMAT_RGBP (GBR_16LE, UNSIGNED_INT16),
   MAKE_FORMAT_RGBAP (GBRA, UNSIGNED_INT8),
 };
 
@@ -1013,8 +1027,10 @@ gst_cuda_allocator_calculate_alloc_height (const GstVideoInfo * info)
     case GST_VIDEO_FORMAT_YV12:
     case GST_VIDEO_FORMAT_NV12:
     case GST_VIDEO_FORMAT_P010_10LE:
+    case GST_VIDEO_FORMAT_P012_LE:
     case GST_VIDEO_FORMAT_P016_LE:
     case GST_VIDEO_FORMAT_I420_10LE:
+    case GST_VIDEO_FORMAT_I420_12LE:
       alloc_height = GST_ROUND_UP_2 (alloc_height);
       break;
     default:
@@ -1025,11 +1041,13 @@ gst_cuda_allocator_calculate_alloc_height (const GstVideoInfo * info)
     case GST_VIDEO_FORMAT_I420:
     case GST_VIDEO_FORMAT_YV12:
     case GST_VIDEO_FORMAT_I420_10LE:
+    case GST_VIDEO_FORMAT_I420_12LE:
       alloc_height *= 2;
       break;
     case GST_VIDEO_FORMAT_NV12:
     case GST_VIDEO_FORMAT_NV21:
     case GST_VIDEO_FORMAT_P010_10LE:
+    case GST_VIDEO_FORMAT_P012_LE:
     case GST_VIDEO_FORMAT_P016_LE:
       alloc_height += alloc_height / 2;
       break;
@@ -1037,10 +1055,15 @@ gst_cuda_allocator_calculate_alloc_height (const GstVideoInfo * info)
     case GST_VIDEO_FORMAT_I422_10LE:
     case GST_VIDEO_FORMAT_I422_12LE:
     case GST_VIDEO_FORMAT_Y444:
+    case GST_VIDEO_FORMAT_Y444_10LE:
+    case GST_VIDEO_FORMAT_Y444_12LE:
     case GST_VIDEO_FORMAT_Y444_16LE:
     case GST_VIDEO_FORMAT_RGBP:
     case GST_VIDEO_FORMAT_BGRP:
     case GST_VIDEO_FORMAT_GBR:
+    case GST_VIDEO_FORMAT_GBR_10LE:
+    case GST_VIDEO_FORMAT_GBR_12LE:
+    case GST_VIDEO_FORMAT_GBR_16LE:
       alloc_height *= 3;
       break;
     case GST_VIDEO_FORMAT_GBRA:
