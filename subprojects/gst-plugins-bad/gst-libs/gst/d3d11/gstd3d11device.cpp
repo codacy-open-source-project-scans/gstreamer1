@@ -40,6 +40,7 @@
 #include <atomic>
 #include <mutex>
 #include <string.h>
+#include <unordered_map>
 
 /**
  * SECTION:gstd3d11device
@@ -120,7 +121,7 @@ struct _GstD3D11DevicePrivate
   ID3D11VideoContext *video_context = nullptr;
 
   IDXGIFactory1 *factory = nullptr;
-  GArray *format_table = nullptr;
+  std::unordered_map<GstVideoFormat, GstD3D11Format> format_table;
 
   std::recursive_mutex extern_lock;
   std::mutex resource_lock;
@@ -132,6 +133,9 @@ struct _GstD3D11DevicePrivate
   std::map <gint64,
       std::pair<ComPtr<ID3D11VertexShader>, ComPtr<ID3D11InputLayout>>> vs_cache;
   std::map <D3D11_FILTER, ComPtr<ID3D11SamplerState>> sampler_cache;
+
+  ID3D11RasterizerState *rs = nullptr;
+  ID3D11RasterizerState *rs_msaa = nullptr;
 
 #if HAVE_D3D11SDKLAYERS_H
   ID3D11Debug *d3d11_debug = nullptr;
@@ -419,14 +423,7 @@ gst_d3d11_device_class_init (GstD3D11DeviceClass * klass)
 static void
 gst_d3d11_device_init (GstD3D11Device * self)
 {
-  GstD3D11DevicePrivate *priv;
-
-  priv = new GstD3D11DevicePrivate ();
-  priv->adapter = DEFAULT_ADAPTER;
-  priv->format_table = g_array_sized_new (FALSE, FALSE,
-      sizeof (GstD3D11Format), GST_D3D11_N_FORMATS);
-
-  self->priv = priv;
+  self->priv = new GstD3D11DevicePrivate ();
 }
 
 static gboolean
@@ -618,10 +615,12 @@ gst_d3d11_device_setup_format_table (GstD3D11Device * self)
     for (guint j = 0; j < GST_VIDEO_MAX_PLANES; j++)
       format.format_support[j] = support[j];
 
+#ifndef GST_DISABLE_GST_DEBUG
     if (gst_debug_category_get_threshold (GST_CAT_DEFAULT) >= GST_LEVEL_LOG)
       dump_format (self, &format);
+#endif
 
-    g_array_append_val (priv->format_table, format);
+    priv->format_table[format.format] = format;
   }
 
   /* FIXME: d3d11 sampler doesn't support packed-and-subsampled formats
@@ -749,6 +748,8 @@ gst_d3d11_device_dispose (GObject * object)
   priv->vs_cache.clear ();
   priv->sampler_cache.clear ();
 
+  GST_D3D11_CLEAR_COM (priv->rs);
+  GST_D3D11_CLEAR_COM (priv->rs_msaa);
   GST_D3D11_CLEAR_COM (priv->device5);
   GST_D3D11_CLEAR_COM (priv->device_context4);
   GST_D3D11_CLEAR_COM (priv->video_device);
@@ -779,7 +780,6 @@ gst_d3d11_device_finalize (GObject * object)
 
   GST_LOG_OBJECT (self, "finalize");
 
-  g_array_unref (priv->format_table);
   g_free (priv->description);
 
   delete priv;
@@ -1410,23 +1410,18 @@ gst_d3d11_device_get_format (GstD3D11Device * device, GstVideoFormat format,
 
   priv = device->priv;
 
-  for (guint i = 0; i < priv->format_table->len; i++) {
-    const GstD3D11Format *d3d11_fmt =
-        &g_array_index (priv->format_table, GstD3D11Format, i);
-
-    if (d3d11_fmt->format != format)
-      continue;
-
+  const auto & target = priv->format_table.find (format);
+  if (target == priv->format_table.end ()) {
     if (device_format)
-      *device_format = *d3d11_fmt;
+      gst_d3d11_format_init (device_format);
 
-    return TRUE;
+    return FALSE;
   }
 
   if (device_format)
-    gst_d3d11_format_init (device_format);
+    *device_format = target->second;
 
-  return FALSE;
+  return TRUE;
 }
 
 GST_DEFINE_MINI_OBJECT_TYPE (GstD3D11Fence, gst_d3d11_fence);
@@ -1904,12 +1899,81 @@ gst_d3d11_device_get_sampler (GstD3D11Device * device, D3D11_FILTER filter,
   desc.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
   desc.MaxLOD = D3D11_FLOAT32_MAX;
 
+  if (filter == D3D11_FILTER_ANISOTROPIC) {
+    if (priv->feature_level > D3D_FEATURE_LEVEL_9_1)
+      desc.MaxAnisotropy = 16;
+    else
+      desc.MaxAnisotropy = 2;
+  }
+
   hr = priv->device->CreateSamplerState (&desc, &state);
   if (!gst_d3d11_result (hr, device))
     return hr;
 
   priv->sampler_cache[filter] = state;
   *sampler = state.Detach ();
+
+  return S_OK;
+}
+
+HRESULT
+gst_d3d11_device_get_rasterizer (GstD3D11Device * device,
+    ID3D11RasterizerState ** rasterizer)
+{
+  GstD3D11DevicePrivate *priv = device->priv;
+  D3D11_RASTERIZER_DESC desc;
+  HRESULT hr;
+
+  std::lock_guard < std::mutex > lk (priv->resource_lock);
+  if (priv->rs) {
+    *rasterizer = priv->rs;
+    priv->rs->AddRef ();
+    return S_OK;
+  }
+
+  memset (&desc, 0, sizeof (D3D11_RASTERIZER_DESC));
+  desc.FillMode = D3D11_FILL_SOLID;
+  desc.CullMode = D3D11_CULL_NONE;
+  desc.DepthClipEnable = TRUE;
+
+  hr = priv->device->CreateRasterizerState (&desc, rasterizer);
+  if (!gst_d3d11_result (hr, device))
+    return hr;
+
+  priv->rs = *rasterizer;
+  priv->rs->AddRef ();
+
+  return S_OK;
+}
+
+HRESULT
+gst_d3d11_device_get_rasterizer_msaa (GstD3D11Device * device,
+    ID3D11RasterizerState ** rasterizer)
+{
+  GstD3D11DevicePrivate *priv = device->priv;
+  D3D11_RASTERIZER_DESC desc;
+  HRESULT hr;
+
+  std::lock_guard < std::mutex > lk (priv->resource_lock);
+  if (priv->rs_msaa) {
+    *rasterizer = priv->rs_msaa;
+    priv->rs_msaa->AddRef ();
+    return S_OK;
+  }
+
+  memset (&desc, 0, sizeof (D3D11_RASTERIZER_DESC));
+  desc.FillMode = D3D11_FILL_SOLID;
+  desc.CullMode = D3D11_CULL_NONE;
+  desc.DepthClipEnable = TRUE;
+  desc.MultisampleEnable = TRUE;
+  desc.AntialiasedLineEnable = TRUE;
+
+  hr = priv->device->CreateRasterizerState (&desc, rasterizer);
+  if (!gst_d3d11_result (hr, device))
+    return hr;
+
+  priv->rs_msaa = *rasterizer;
+  priv->rs_msaa->AddRef ();
 
   return S_OK;
 }

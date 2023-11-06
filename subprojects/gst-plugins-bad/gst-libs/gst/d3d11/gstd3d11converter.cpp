@@ -84,6 +84,7 @@ gst_d3d11_converter_sampler_filter_get_type (void)
         "D3D11_FILTER_MIN_LINEAR_MAG_MIP_POINT", "min-linear-mag-mip-point"},
     {D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,
         "D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT", "min-mag-linear-mip-point"},
+    {D3D11_FILTER_ANISOTROPIC, "D3D11_FILTER_ANISOTROPIC", "anisotropic"},
     {0, nullptr, nullptr},
   };
 
@@ -173,6 +174,62 @@ struct GammaLut
 
 /* *INDENT-OFF* */
 typedef std::shared_ptr<GammaLut> GammaLutPtr;
+
+static const FLOAT g_matrix_identity[] = {
+  1.0f, 0.0f, 0.0f, 0.0f,
+  0.0f, 1.0f, 0.0f, 0.0f,
+  0.0f, 0.0f, 1.0f, 0.0f,
+  0.0f, 0.0f, 0.0f, 1.0f,
+};
+
+static const FLOAT g_matrix_90r[] = {
+  0.0f, -1.0f, 0.0f, 0.0f,
+  1.0f, 0.0f, 0.0f, 0.0f,
+  0.0f, 0.0f, 1.0f, 0.0f,
+  0.0f, 0.0f, 0.0f, 1.0f,
+};
+
+static const FLOAT g_matrix_180[] = {
+  -1.0f, 0.0f, 0.0f, 0.0f,
+  0.0f, -1.0f, 0.0f, 0.0f,
+  0.0f, 0.0f, 1.0f, 0.0f,
+  0.0f, 0.0f, 0.0f, 1.0f,
+};
+
+static const FLOAT g_matrix_90l[] = {
+  0.0f, 1.0f, 0.0f, 0.0f,
+  -1.0f, 0.0f, 0.0f, 0.0f,
+  0.0f, 0.0f, 1.0f, 0.0f,
+  0.0f, 0.0f, 0.0f, 1.0f,
+};
+
+static const FLOAT g_matrix_horiz[] = {
+  -1.0f, 0.0f, 0.0f, 0.0f,
+  0.0f, 1.0f, 0.0f, 0.0f,
+  0.0f, 0.0f, 1.0f, 0.0f,
+  0.0f, 0.0f, 0.0f, 1.0f,
+};
+
+static const FLOAT g_matrix_vert[] = {
+  1.0f, 0.0f, 0.0f, 0.0f,
+  0.0f, -1.0f, 0.0f, 0.0f,
+  0.0f, 0.0f, 1.0f, 0.0f,
+  0.0f, 0.0f, 0.0f, 1.0f,
+};
+
+static const FLOAT g_matrix_ul_lr[] = {
+  0.0f, -1.0f, 0.0f, 0.0f,
+  -1.0f, 0.0f, 0.0f, 0.0f,
+  0.0f, 0.0f, 1.0f, 0.0f,
+  0.0f, 0.0f, 0.0f, 1.0f,
+};
+
+static const FLOAT g_matrix_ur_ll[] = {
+  0.0f, 1.0f, 0.0f, 0.0f,
+  1.0f, 0.0f, 0.0f, 0.0f,
+  0.0f, 0.0f, 1.0f, 0.0f,
+  0.0f, 0.0f, 0.0f, 1.0f,
+};
 /* *INDENT-ON* */
 
 enum
@@ -204,7 +261,13 @@ enum
 
 struct _GstD3D11ConverterPrivate
 {
-  ~_GstD3D11ConverterPrivate ()
+  _GstD3D11ConverterPrivate ()
+  {
+    G_STATIC_ASSERT (sizeof (custom_transform) == sizeof (g_matrix_identity));
+    memcpy (custom_transform, g_matrix_identity, sizeof (g_matrix_identity));
+  }
+
+   ~_GstD3D11ConverterPrivate ()
   {
     g_free (in_mdcv_str);
     g_free (out_mdcv_str);
@@ -233,10 +296,13 @@ struct _GstD3D11ConverterPrivate
   ComPtr < ID3D11Buffer > vertex_buffer;
   ComPtr < ID3D11Buffer > index_buffer;
   ComPtr < ID3D11Buffer > const_buffer;
+  ComPtr < ID3D11Buffer > vs_const_buffer;
   ComPtr < ID3D11VertexShader > vs;
   ComPtr < ID3D11InputLayout > layout;
   ComPtr < ID3D11SamplerState > sampler;
   ComPtr < ID3D11SamplerState > linear_sampler;
+  ComPtr < ID3D11RasterizerState > rasterizer;
+  ComPtr < ID3D11RasterizerState > msaa_rasterizer;
   PixelShaderList ps;
   D3D11_VIEWPORT viewport[GST_VIDEO_MAX_PLANES];
 
@@ -253,10 +319,12 @@ struct _GstD3D11ConverterPrivate
   gboolean update_src_rect = FALSE;
   gboolean update_dest_rect = FALSE;
   gboolean update_alpha = FALSE;
+  gboolean update_transform = FALSE;
+  FLOAT custom_transform[16];
 
   PSConstBuffer const_data;
 
-  gboolean clear_background;
+  gboolean clear_background = FALSE;
   FLOAT clear_color[4][4];
   GstD3D11ColorMatrix clear_color_matrix;
 
@@ -601,7 +669,7 @@ gst_d3d11_converter_set_property (GObject * object, guint prop_id,
           (GstVideoOrientationMethod) g_value_get_enum (value);
       if (video_direction != priv->video_direction) {
         priv->video_direction = video_direction;
-        priv->update_src_rect = TRUE;
+        priv->update_transform = TRUE;
       }
       break;
     }
@@ -709,8 +777,11 @@ gst_d3d11_color_convert_setup_shader (GstD3D11Converter * self,
   ComPtr < ID3D11SamplerState > sampler;
   ComPtr < ID3D11SamplerState > linear_sampler;
   ComPtr < ID3D11Buffer > const_buffer;
+  ComPtr < ID3D11Buffer > vs_const_buffer;
   ComPtr < ID3D11Buffer > vertex_buffer;
   ComPtr < ID3D11Buffer > index_buffer;
+  ComPtr < ID3D11RasterizerState > rasterizer;
+  ComPtr < ID3D11RasterizerState > msaa_rasterizer;
   D3D11_SUBRESOURCE_DATA subresource;
 
   memset (&subresource, 0, sizeof (subresource));
@@ -720,8 +791,14 @@ gst_d3d11_color_convert_setup_shader (GstD3D11Converter * self,
 
   hr = gst_d3d11_device_get_sampler (device, sampler_filter, &sampler);
   if (!gst_d3d11_result (hr, device)) {
-    GST_ERROR_OBJECT (self, "Couldn't create sampler, hr: 0x%x", (guint) hr);
-    return FALSE;
+    GST_WARNING_OBJECT (self, "Trying again with linear sampler");
+
+    hr = gst_d3d11_device_get_sampler (device, D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+        &sampler);
+    if (!gst_d3d11_result (hr, device)) {
+      GST_ERROR_OBJECT (self, "Couldn't create sampler, hr: 0x%x", (guint) hr);
+      return FALSE;
+    }
   }
 
   hr = gst_d3d11_device_get_sampler (device, D3D11_FILTER_MIN_MAG_MIP_LINEAR,
@@ -744,7 +821,24 @@ gst_d3d11_color_convert_setup_shader (GstD3D11Converter * self,
 
   hr = gst_d3d11_get_converter_vertex_shader (device, &vs, &layout);
   if (!gst_d3d11_result (hr, device)) {
-    GST_ERROR_OBJECT (self, "Couldn't vertex pixel shader");
+    GST_ERROR_OBJECT (self, "Couldn't create vertex shader");
+    return FALSE;
+  }
+
+  hr = gst_d3d11_device_get_rasterizer (device, &rasterizer);
+  if (!gst_d3d11_result (hr, device)) {
+    GST_ERROR_OBJECT (self, "Couldn't create rasterizer state");
+    return FALSE;
+  }
+
+  hr = gst_d3d11_device_get_rasterizer_msaa (device, &msaa_rasterizer);
+  if (!gst_d3d11_result (hr, device)) {
+    GST_ERROR_OBJECT (self, "Couldn't create rasterizer state");
+    return FALSE;
+  }
+
+  if (!gst_d3d11_result (hr, device)) {
+    GST_ERROR_OBJECT (self, "Couldn't create MSAA rasterizer state");
     return FALSE;
   }
 
@@ -767,6 +861,23 @@ gst_d3d11_color_convert_setup_shader (GstD3D11Converter * self,
           "Couldn't create constant buffer, hr: 0x%x", (guint) hr);
       return FALSE;
     }
+  }
+
+  G_STATIC_ASSERT (sizeof (g_matrix_identity) % 16 == 0);
+  buffer_desc.Usage = D3D11_USAGE_DYNAMIC;
+  buffer_desc.ByteWidth = sizeof (g_matrix_identity);
+  buffer_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+  buffer_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+  subresource.pSysMem = g_matrix_identity;
+  subresource.SysMemPitch = sizeof (g_matrix_identity);
+
+  hr = device_handle->CreateBuffer (&buffer_desc, &subresource,
+      &vs_const_buffer);
+  if (!gst_d3d11_result (hr, device)) {
+    GST_ERROR_OBJECT (self,
+        "Couldn't create constant buffer, hr: 0x%x", (guint) hr);
+    return FALSE;
   }
 
   /* bottom left */
@@ -839,11 +950,14 @@ gst_d3d11_color_convert_setup_shader (GstD3D11Converter * self,
   priv->vertex_buffer = vertex_buffer;
   priv->index_buffer = index_buffer;
   priv->const_buffer = const_buffer;
+  priv->vs_const_buffer = vs_const_buffer;
   priv->vs = vs;
   priv->layout = layout;
   priv->sampler = sampler;
   priv->linear_sampler = linear_sampler;
   priv->ps = ps_list;
+  priv->rasterizer = rasterizer;
+  priv->msaa_rasterizer = msaa_rasterizer;
 
   priv->input_texture_width = GST_VIDEO_INFO_WIDTH (in_info);
   priv->input_texture_height = GST_VIDEO_INFO_HEIGHT (in_info);
@@ -863,175 +977,90 @@ gst_d3d11_color_convert_setup_shader (GstD3D11Converter * self,
   return TRUE;
 }
 
-static void
-gst_d3d11_converter_apply_orientation (GstD3D11Converter * self,
-    VertexData * vertex_data, gfloat l, gfloat r, gfloat t, gfloat b)
+static gboolean
+gst_d3d11_converter_apply_orientation (GstD3D11Converter * self)
 {
   GstD3D11ConverterPrivate *priv = self->priv;
-  gfloat u[4], v[4];
-
-  /*
-   * 1 (l, t) -- 2 (r, t)
-   *     |            |
-   * 0 (l, b) -- 3 (r, b)
-   */
-  u[0] = l;
-  u[1] = l;
-  u[2] = r;
-  u[3] = r;
-
-  v[0] = b;
-  v[1] = t;
-  v[2] = t;
-  v[3] = b;
+  ID3D11DeviceContext *context_handle;
+  const FLOAT *matrix = nullptr;
+  D3D11_MAPPED_SUBRESOURCE map;
+  HRESULT hr;
 
   switch (priv->video_direction) {
     case GST_VIDEO_ORIENTATION_IDENTITY:
     case GST_VIDEO_ORIENTATION_AUTO:
-    case GST_VIDEO_ORIENTATION_CUSTOM:
     default:
+      matrix = g_matrix_identity;
+      break;
+    case GST_VIDEO_ORIENTATION_CUSTOM:
+      matrix = priv->custom_transform;
       break;
     case GST_VIDEO_ORIENTATION_90R:
-      /*
-       * 1 (l, t) -- 2 (r, t)    1 (l, b) -- 2 (l, t)
-       *     |           |    ->      |          |
-       * 0 (l, b) -- 3 (r, b)    0 (r, b) -- 3 (r, t)
-       */
-      u[0] = r;
-      u[1] = l;
-      u[2] = l;
-      u[3] = r;
-
-      v[0] = b;
-      v[1] = b;
-      v[2] = t;
-      v[3] = t;
+      matrix = g_matrix_90r;
       break;
     case GST_VIDEO_ORIENTATION_180:
-      /*
-       * 1 (l, t) -- 2 (r, t)    1 (r, b) -- 2 (l, b)
-       *     |           |    ->      |          |
-       * 0 (l, b) -- 3 (r, b)    0 (r, t) -- 3 (l, t)
-       */
-      u[0] = r;
-      u[1] = r;
-      u[2] = l;
-      u[3] = l;
-
-      v[0] = t;
-      v[1] = b;
-      v[2] = b;
-      v[3] = t;
+      matrix = g_matrix_180;
       break;
     case GST_VIDEO_ORIENTATION_90L:
-      /*
-       * 1 (l, t) -- 2 (r, t)    1 (r, t) -- 2 (r, b)
-       *     |           |    ->      |          |
-       * 0 (l, b) -- 3 (r, b)    0 (l, t) -- 3 (l, b)
-       */
-      u[0] = l;
-      u[1] = r;
-      u[2] = r;
-      u[3] = l;
-
-      v[0] = t;
-      v[1] = t;
-      v[2] = b;
-      v[3] = b;
+      matrix = g_matrix_90l;
       break;
     case GST_VIDEO_ORIENTATION_HORIZ:
-      /*
-       * 1 (l, t) -- 2 (r, t)    1 (r, t) -- 2 (l, t)
-       *     |           |    ->      |          |
-       * 0 (l, b) -- 3 (r, b)    0 (r, b) -- 3 (l, b)
-       */
-      u[0] = r;
-      u[1] = r;
-      u[2] = l;
-      u[3] = l;
-
-      v[0] = b;
-      v[1] = t;
-      v[2] = t;
-      v[3] = b;
+      matrix = g_matrix_horiz;
       break;
     case GST_VIDEO_ORIENTATION_VERT:
-      /*
-       * 1 (l, t) -- 2 (r, t)    1 (l, b) -- 2 (r, b)
-       *     |           |    ->      |          |
-       * 0 (l, b) -- 3 (r, b)    0 (l, t) -- 3 (r, t)
-       */
-      u[0] = l;
-      u[1] = l;
-      u[2] = r;
-      u[3] = r;
-
-      v[0] = t;
-      v[1] = b;
-      v[2] = b;
-      v[3] = t;
+      matrix = g_matrix_vert;
       break;
     case GST_VIDEO_ORIENTATION_UL_LR:
-      /*
-       * 1 (l, t) -- 2 (r, t)    1 (l, t) -- 2 (l, b)
-       *     |           |    ->      |          |
-       * 0 (l, b) -- 3 (r, b)    0 (r, t) -- 3 (r, b)
-       */
-      u[0] = r;
-      u[1] = l;
-      u[2] = l;
-      u[3] = r;
-
-      v[0] = t;
-      v[1] = t;
-      v[2] = b;
-      v[3] = b;
+      matrix = g_matrix_ul_lr;
       break;
     case GST_VIDEO_ORIENTATION_UR_LL:
-      /*
-       * 1 (l, t) -- 2 (r, t)    1 (r, b) -- 2 (r, t)
-       *     |           |    ->      |          |
-       * 0 (l, b) -- 3 (r, b)    0 (l, b) -- 3 (l, t)
-       */
-      u[0] = l;
-      u[1] = r;
-      u[2] = r;
-      u[3] = l;
-
-      v[0] = b;
-      v[1] = b;
-      v[2] = t;
-      v[3] = t;
+      matrix = g_matrix_ur_ll;
       break;
   }
 
-  for (guint i = 0; i < 4; i++) {
-    vertex_data[i].texture.u = u[i];
-    vertex_data[i].texture.v = v[i];
+  context_handle = gst_d3d11_device_get_device_context_handle (self->device);
+
+  hr = context_handle->Map (priv->vs_const_buffer.Get (), 0,
+      D3D11_MAP_WRITE_DISCARD, 0, &map);
+  if (!gst_d3d11_result (hr, self->device))
+    return FALSE;
+
+  memcpy (map.pData, matrix, sizeof (FLOAT) * 16);
+
+  context_handle->Unmap (priv->vs_const_buffer.Get (), 0);
+
+  return TRUE;
+}
+
+static void
+gst_d3d11_converter_update_clear_background (GstD3D11Converter * self)
+{
+  GstD3D11ConverterPrivate *priv = self->priv;
+  const GstVideoInfo *out_info = &priv->out_info;
+
+  if (priv->fill_border && (priv->dest_x != 0 || priv->dest_y != 0 ||
+          priv->dest_width != out_info->width ||
+          priv->dest_height != out_info->height ||
+          priv->video_direction == GST_VIDEO_ORIENTATION_CUSTOM)) {
+    GST_DEBUG_OBJECT (self, "Enable background color");
+    priv->clear_background = TRUE;
+  } else {
+    GST_DEBUG_OBJECT (self, "Disable background color");
+    priv->clear_background = FALSE;
   }
 }
 
 static gboolean
-gst_d3d11_converter_update_src_rect (GstD3D11Converter * self)
+gst_d3d11_converter_update_transform (GstD3D11Converter * self)
 {
   GstD3D11ConverterPrivate *priv = self->priv;
-  D3D11_MAPPED_SUBRESOURCE map;
-  VertexData *vertex_data;
-  ID3D11DeviceContext *context_handle;
-  HRESULT hr;
-  FLOAT u0, u1, v0, v1, off_u, off_v;
-  gint texture_width = priv->input_texture_width;
-  gint texture_height = priv->input_texture_height;
 
-  if (!priv->update_src_rect)
+  if (!priv->update_transform)
     return TRUE;
 
-  priv->update_src_rect = FALSE;
+  priv->update_transform = FALSE;
 
-  priv->src_rect.left = priv->src_x;
-  priv->src_rect.top = priv->src_y;
-  priv->src_rect.right = priv->src_x + priv->src_width;
-  priv->src_rect.bottom = priv->src_y + priv->src_height;
+  gst_d3d11_converter_update_clear_background (self);
 
   if ((priv->supported_backend & GST_D3D11_CONVERTER_BACKEND_VIDEO_PROCESSOR)) {
     priv->processor_direction_not_supported = FALSE;
@@ -1082,19 +1111,49 @@ gst_d3d11_converter_update_src_rect (GstD3D11Converter * self)
         break;
     }
 
-    if (priv->enable_rotation &&
-        (priv->processor_caps.FeatureCaps & FEATURE_CAPS_ROTATION) == 0) {
-      GST_WARNING_OBJECT (self, "Device does not support rotation");
-      priv->processor_direction_not_supported = TRUE;
-    }
+    if (priv->video_direction != GST_VIDEO_ORIENTATION_CUSTOM) {
+      if (priv->enable_rotation &&
+          (priv->processor_caps.FeatureCaps & FEATURE_CAPS_ROTATION) == 0) {
+        GST_WARNING_OBJECT (self, "Device does not support rotation");
+        priv->processor_direction_not_supported = TRUE;
+      }
 
-    if (priv->enable_mirror &&
-        (priv->processor_caps.FeatureCaps & PROCESSOR_FEATURE_CAPS_MIRROR) ==
-        0) {
-      GST_WARNING_OBJECT (self, "Device does not support mirror");
-      priv->processor_direction_not_supported = TRUE;
+      if (priv->enable_mirror &&
+          (priv->processor_caps.FeatureCaps & PROCESSOR_FEATURE_CAPS_MIRROR) ==
+          0) {
+        GST_WARNING_OBJECT (self, "Device does not support mirror");
+        priv->processor_direction_not_supported = TRUE;
+      }
     }
   }
+
+  if ((priv->supported_backend & GST_D3D11_CONVERTER_BACKEND_SHADER) == 0)
+    return TRUE;
+
+  return gst_d3d11_converter_apply_orientation (self);
+}
+
+static gboolean
+gst_d3d11_converter_update_src_rect (GstD3D11Converter * self)
+{
+  GstD3D11ConverterPrivate *priv = self->priv;
+  D3D11_MAPPED_SUBRESOURCE map;
+  VertexData *vertex_data;
+  ID3D11DeviceContext *context_handle;
+  HRESULT hr;
+  FLOAT u0, u1, v0, v1, off_u, off_v;
+  gint texture_width = priv->input_texture_width;
+  gint texture_height = priv->input_texture_height;
+
+  if (!priv->update_src_rect)
+    return TRUE;
+
+  priv->update_src_rect = FALSE;
+
+  priv->src_rect.left = priv->src_x;
+  priv->src_rect.top = priv->src_y;
+  priv->src_rect.right = priv->src_x + priv->src_width;
+  priv->src_rect.bottom = priv->src_y + priv->src_height;
 
   if ((priv->supported_backend & GST_D3D11_CONVERTER_BACKEND_SHADER) == 0)
     return TRUE;
@@ -1144,23 +1203,29 @@ gst_d3d11_converter_update_src_rect (GstD3D11Converter * self)
   vertex_data[0].position.x = -1.0f;
   vertex_data[0].position.y = -1.0f;
   vertex_data[0].position.z = 0.0f;
+  vertex_data[0].texture.u = u0;
+  vertex_data[0].texture.v = v1;
 
   /* top left */
   vertex_data[1].position.x = -1.0f;
   vertex_data[1].position.y = 1.0f;
   vertex_data[1].position.z = 0.0f;
+  vertex_data[1].texture.u = u0;
+  vertex_data[1].texture.v = v0;
 
   /* top right */
   vertex_data[2].position.x = 1.0f;
   vertex_data[2].position.y = 1.0f;
   vertex_data[2].position.z = 0.0f;
+  vertex_data[2].texture.u = u1;
+  vertex_data[2].texture.v = v0;
 
   /* bottom right */
   vertex_data[3].position.x = 1.0f;
   vertex_data[3].position.y = -1.0f;
   vertex_data[3].position.z = 0.0f;
-
-  gst_d3d11_converter_apply_orientation (self, vertex_data, u0, u1, v0, v1);
+  vertex_data[3].texture.u = u1;
+  vertex_data[3].texture.v = v1;
 
   context_handle->Unmap (priv->vertex_buffer.Get (), 0);
 
@@ -1171,7 +1236,6 @@ static gboolean
 gst_d3d11_converter_update_dest_rect (GstD3D11Converter * self)
 {
   GstD3D11ConverterPrivate *priv = self->priv;
-  const GstVideoInfo *out_info = &priv->out_info;
 
   if (!priv->update_dest_rect)
     return TRUE;
@@ -1191,15 +1255,7 @@ gst_d3d11_converter_update_dest_rect (GstD3D11Converter * self)
       priv->viewport[0].TopLeftX, priv->viewport[0].TopLeftY,
       priv->viewport[0].Width, priv->viewport[0].Height);
 
-  if (priv->fill_border && (priv->dest_x != 0 || priv->dest_y != 0 ||
-          priv->dest_width != out_info->width ||
-          priv->dest_height != out_info->height)) {
-    GST_DEBUG_OBJECT (self, "Enable background color");
-    priv->clear_background = TRUE;
-  } else {
-    GST_DEBUG_OBJECT (self, "Disable background color");
-    priv->clear_background = FALSE;
-  }
+  gst_d3d11_converter_update_clear_background (self);
 
   switch (GST_VIDEO_INFO_FORMAT (&priv->out_info)) {
     case GST_VIDEO_FORMAT_NV12:
@@ -2129,7 +2185,7 @@ out:
 static gboolean
 gst_d3d11_converter_convert_internal (GstD3D11Converter * self,
     ID3D11ShaderResourceView * srv[GST_VIDEO_MAX_PLANES],
-    ID3D11RenderTargetView * rtv[GST_VIDEO_MAX_PLANES])
+    ID3D11RenderTargetView * rtv[GST_VIDEO_MAX_PLANES], gboolean multisampled)
 {
   GstD3D11ConverterPrivate *priv;
   ComPtr < ID3D11Resource > resource;
@@ -2190,7 +2246,6 @@ gst_d3d11_converter_convert_internal (GstD3D11Converter * self,
 
   context->IASetPrimitiveTopology (D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   ID3D11Buffer *vertex[] = { priv->vertex_buffer.Get () };
-  context->IASetInputLayout (priv->layout.Get ());
   context->IASetVertexBuffers (0, 1, vertex, &vertex_stride, &offsets);
   context->IASetIndexBuffer (priv->index_buffer.Get (),
       DXGI_FORMAT_R16_UINT, 0);
@@ -2199,7 +2254,11 @@ gst_d3d11_converter_convert_internal (GstD3D11Converter * self,
     priv->linear_sampler.Get ()
   };
   context->PSSetSamplers (0, 2, samplers);
+
+  ID3D11Buffer *vs_const_buffer[] = { priv->vs_const_buffer.Get () };
+  context->IASetInputLayout (priv->layout.Get ());
   context->VSSetShader (priv->vs.Get (), nullptr, 0);
+  context->VSSetConstantBuffers (0, 1, vs_const_buffer);
 
   if (priv->const_buffer) {
     ID3D11Buffer *const_buffer[] = { priv->const_buffer.Get () };
@@ -2217,6 +2276,11 @@ gst_d3d11_converter_convert_internal (GstD3D11Converter * self,
   auto ps = priv->ps[0];
   context->PSSetShader (ps->shader.Get (), nullptr, 0);
   context->RSSetViewports (ps->num_rtv, priv->viewport);
+  if (multisampled)
+    context->RSSetState (priv->msaa_rasterizer.Get ());
+  else
+    context->RSSetState (priv->rasterizer.Get ());
+
   context->OMSetRenderTargets (ps->num_rtv, rtv, nullptr);
   if (priv->blend) {
     context->OMSetBlendState (priv->blend.Get (),
@@ -2678,9 +2742,11 @@ gst_d3d11_converter_processor_available (GstD3D11Converter * self)
   if (gst_d3d11_converter_need_blend (self))
     return FALSE;
 
-  /* flip/rotate is not supported by processor */
-  if (priv->processor_direction_not_supported)
+  /* flip/rotate or affine transform is not supported by processor */
+  if (priv->processor_direction_not_supported ||
+      priv->video_direction == GST_VIDEO_ORIENTATION_CUSTOM) {
     return FALSE;
+  }
 
   return TRUE;
 }
@@ -2911,6 +2977,7 @@ gst_d3d11_converter_convert_buffer_internal (GstD3D11Converter * self,
   guint num_srv, num_rtv;
   gboolean ret = FALSE;
   gboolean in_d3d11;
+  gboolean multisampled = FALSE;
 
   std::lock_guard < std::mutex > lk (priv->prop_lock);
 
@@ -2936,6 +3003,9 @@ gst_d3d11_converter_convert_buffer_internal (GstD3D11Converter * self,
     return FALSE;
   }
 
+  if (desc.SampleDesc.Count > 1)
+    multisampled = TRUE;
+
   gst_d3d11_converter_update_hdr10_meta (self);
   /* Update in/out rect */
   if (!gst_d3d11_converter_update_dest_rect (self)) {
@@ -2948,8 +3018,13 @@ gst_d3d11_converter_convert_buffer_internal (GstD3D11Converter * self,
     return FALSE;
   }
 
+  if (!gst_d3d11_converter_update_transform (self)) {
+    GST_ERROR_OBJECT (self, "Failed to update transform matrix");
+    return FALSE;
+  }
+
   in_d3d11 = gst_d3d11_converter_is_d3d11_buffer (self, in_buf);
-  if (gst_d3d11_converter_processor_available (self)) {
+  if (!multisampled && gst_d3d11_converter_processor_available (self)) {
     gboolean use_processor = FALSE;
     gboolean piv_available = FALSE;
 
@@ -3062,7 +3137,7 @@ gst_d3d11_converter_convert_buffer_internal (GstD3D11Converter * self,
 
   GST_TRACE_OBJECT (self, "Converting using shader");
 
-  ret = gst_d3d11_converter_convert_internal (self, srv, rtv);
+  ret = gst_d3d11_converter_convert_internal (self, srv, rtv, multisampled);
 
 out:
   if (in_buf)
@@ -3112,7 +3187,6 @@ gst_d3d11_converter_convert_buffer (GstD3D11Converter * converter,
  *
  * Since: 1.22
  */
-
 gboolean
 gst_d3d11_converter_convert_buffer_unlocked (GstD3D11Converter * converter,
     GstBuffer * in_buf, GstBuffer * out_buf)
@@ -3123,4 +3197,36 @@ gst_d3d11_converter_convert_buffer_unlocked (GstD3D11Converter * converter,
 
   return gst_d3d11_converter_convert_buffer_internal (converter,
       in_buf, out_buf);
+}
+
+/**
+ * gst_d3d11_converter_set_transform_matrix:
+ * @converter: a #GstD3D11Converter
+ * @matrix: the row-major 4x4 transform matrix
+ *
+ * Apply transform matrix
+ *
+ * Returns: %TRUE if successful
+ *
+ * Since: 1.24
+ */
+gboolean
+gst_d3d11_converter_set_transform_matrix (GstD3D11Converter * converter,
+    gfloat matrix[16])
+{
+  GstD3D11ConverterPrivate *priv;
+
+  g_return_val_if_fail (GST_IS_D3D11_CONVERTER (converter), FALSE);
+  g_return_val_if_fail (matrix, FALSE);
+
+  priv = converter->priv;
+  if ((priv->supported_backend & GST_D3D11_CONVERTER_BACKEND_SHADER) == 0) {
+    GST_ERROR_OBJECT (converter, "Shader backend is disabled");
+    return FALSE;
+  }
+
+  std::lock_guard < std::mutex > lk (priv->prop_lock);
+  memcpy (priv->custom_transform, matrix, sizeof (priv->custom_transform));
+  priv->update_transform = TRUE;
+  return TRUE;
 }

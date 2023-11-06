@@ -50,6 +50,28 @@ typedef enum
 #define GST_TYPE_D3D11_ALPHA_MODE (gst_d3d11_alpha_mode_get_type())
 GType gst_d3d11_alpha_mode_get_type (void);
 
+typedef enum
+{
+  GST_D3D11_MSAA_DISABLED,
+  GST_D3D11_MSAA_2X,
+  GST_D3D11_MSAA_4X,
+  GST_D3D11_MSAA_8X,
+} GstD3D11MSAAMode;
+
+#define GST_TYPE_D3D11_MSAA_MODE (gst_d3d11_msaa_mode_get_type())
+GType gst_d3d11_msaa_mode_get_type (void);
+
+typedef enum
+{
+  GST_D3D11_SAMPLING_METHOD_NEAREST,
+  GST_D3D11_SAMPLING_METHOD_BILINEAR,
+  GST_D3D11_SAMPLING_METHOD_LINEAR_MINIFICATION,
+  GST_D3D11_SAMPLING_METHOD_ANISOTROPIC,
+} GstD3D11SamplingMethod;
+
+#define GST_TYPE_D3D11_SAMPLING_METHOD (gst_d3d11_sampling_method_get_type())
+GType gst_d3d11_sampling_method_get_type (void);
+
 void            gst_d3d11_plugin_utils_init         (D3D_FEATURE_LEVEL feature_level);
 
 GstCaps *       gst_d3d11_get_updated_template_caps (GstStaticCaps * template_caps);
@@ -136,6 +158,26 @@ HRESULT         gst_d3d11_get_vertex_shader_coord  (GstD3D11Device * device,
 HRESULT         gst_d3d11_get_vertex_shader_pos   (GstD3D11Device * device,
                                                    ID3D11VertexShader ** vs,
                                                    ID3D11InputLayout ** layout);
+
+gboolean        gst_d3d11_need_transform          (gfloat rotation_x,
+                                                   gfloat rotation_y,
+                                                   gfloat rotation_z,
+                                                   gfloat scale_x,
+                                                   gfloat scale_y);
+
+void            gst_d3d11_calculate_transform_matrix (GstVideoOrientationMethod method,
+                                                      gfloat viewport_width,
+                                                      gfloat viewport_height,
+                                                      gfloat fov,
+                                                      gboolean ortho,
+                                                      gfloat rotation_x,
+                                                      gfloat rotation_y,
+                                                      gfloat rotation_z,
+                                                      gfloat scale_x,
+                                                      gfloat scale_y,
+                                                      gfloat transform_matrix[16]);
+
+D3D11_FILTER    gst_d3d11_sampling_method_to_native (GstD3D11SamplingMethod method);
 
 G_END_DECLS
 

@@ -30,11 +30,16 @@
 
 #include "hlsl/gstd3d11plugin-hlsl.h"
 
+/* Disable platform-specific intrinsics */
+#define _XM_NO_INTRINSICS_
+#include <DirectXMath.h>
+
 GST_DEBUG_CATEGORY_EXTERN (gst_d3d11_plugin_utils_debug);
 #define GST_CAT_DEFAULT gst_d3d11_plugin_utils_debug
 
 /* *INDENT-OFF* */
 using namespace Microsoft::WRL;
+using namespace DirectX;
 /* *INDENT-ON* */
 
 /**
@@ -72,6 +77,82 @@ gst_d3d11_alpha_mode_get_type (void)
 
   GST_D3D11_CALL_ONCE_BEGIN {
     type = g_enum_register_static ("GstD3D11AlphaMode", alpha_mode);
+  } GST_D3D11_CALL_ONCE_END;
+
+  return type;
+}
+
+/**
+ * GstD3D11MSAAMode:
+ *
+ * Since: 1.24
+ */
+GType
+gst_d3d11_msaa_mode_get_type (void)
+{
+  static GType type = 0;
+  static const GEnumValue msaa_mode[] = {
+    {GST_D3D11_MSAA_DISABLED, "Disabled", "disabled"},
+    {GST_D3D11_MSAA_2X, "2x MSAA", "2x"},
+    {GST_D3D11_MSAA_4X, "4x MSAA", "4x"},
+    {GST_D3D11_MSAA_8X, "8x MSAA", "8x"},
+    {0, nullptr, nullptr},
+  };
+
+  GST_D3D11_CALL_ONCE_BEGIN {
+    type = g_enum_register_static ("GstD3D11MSAAMode", msaa_mode);
+  } GST_D3D11_CALL_ONCE_END;
+
+  return type;
+}
+
+/**
+ * GstD3D11SamplingMethod:
+ *
+ * Texture sampling method
+ *
+ * Since: 1.24
+ */
+GType
+gst_d3d11_sampling_method_get_type (void)
+{
+  static GType type = 0;
+  static const GEnumValue methods[] = {
+    /**
+     * GstD3D11SamplingMethod::nearest-neighbour:
+     *
+     * Since: 1.24
+     */
+    {GST_D3D11_SAMPLING_METHOD_NEAREST,
+        "Nearest Neighbour", "nearest-neighbour"},
+
+    /**
+     * GstD3D11SamplingMethod::bilinear:
+     *
+     * Since: 1.24
+     */
+    {GST_D3D11_SAMPLING_METHOD_BILINEAR,
+        "Bilinear", "bilinear"},
+
+    /**
+     * GstD3D11SamplingMethod::linear-minification:
+     *
+     * Since: 1.24
+     */
+    {GST_D3D11_SAMPLING_METHOD_LINEAR_MINIFICATION,
+        "Linear minification, point magnification", "linear-minification"},
+
+    /**
+     * GstD3D11SamplingMethod::anisotropic:
+     *
+     * Since: 1.24
+     */
+    {GST_D3D11_SAMPLING_METHOD_ANISOTROPIC, "Anisotropic", "anisotropic"},
+    {0, nullptr, nullptr},
+  };
+
+  GST_D3D11_CALL_ONCE_BEGIN {
+    type = g_enum_register_static ("GstD3D11SamplingMethod", methods);
   } GST_D3D11_CALL_ONCE_END;
 
   return type;
@@ -916,4 +997,161 @@ gst_d3d11_get_vertex_shader_pos (GstD3D11Device * device,
       g_VSMain_pos, sizeof (g_VSMain_pos),
       g_VSMain_pos_str, sizeof (g_VSMain_pos_str), "VSMain_pos", &input_desc, 1,
       vs, layout);
+}
+
+gboolean
+gst_d3d11_need_transform (gfloat rotation_x, gfloat rotation_y,
+    gfloat rotation_z, gfloat scale_x, gfloat scale_y)
+{
+  const gfloat min_diff = 0.00001f;
+
+  if (!XMScalarNearEqual (rotation_x, 0.0f, min_diff) ||
+      !XMScalarNearEqual (rotation_y, 0.0f, min_diff) ||
+      !XMScalarNearEqual (rotation_z, 0.0f, min_diff) ||
+      !XMScalarNearEqual (scale_x, 1.0f, min_diff) ||
+      !XMScalarNearEqual (scale_y, 1.0f, min_diff)) {
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
+static const XMFLOAT4X4 g_matrix_90r = XMFLOAT4X4 (0.0f, -1.0f, 0.0f, 0.0f,
+    1.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f);
+
+static const XMFLOAT4X4 g_matrix_180 = XMFLOAT4X4 (-1.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, -1.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f);
+
+static const XMFLOAT4X4 g_matrix_90l = XMFLOAT4X4 (0.0f, 1.0f, 0.0f, 0.0f,
+    -1.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f);
+
+static const XMFLOAT4X4 g_matrix_horiz = XMFLOAT4X4 (-1.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, 1.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f);
+
+static const XMFLOAT4X4 g_matrix_vert = XMFLOAT4X4 (1.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, -1.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f);
+
+static const XMFLOAT4X4 g_matrix_ul_lr = XMFLOAT4X4 (0.0f, -1.0f, 0.0f, 0.0f,
+    -1.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f);
+
+static const XMFLOAT4X4 g_matrix_ur_ll = XMFLOAT4X4 (0.0f, 1.0f, 0.0f, 0.0f,
+    1.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f);
+
+void
+gst_d3d11_calculate_transform_matrix (GstVideoOrientationMethod method,
+    gfloat viewport_width, gfloat viewport_height, gfloat fov, gboolean ortho,
+    gfloat rotation_x, gfloat rotation_y, gfloat rotation_z,
+    gfloat scale_x, gfloat scale_y, gfloat transform_matrix[16])
+{
+  gfloat aspect_ratio;
+  gboolean rotated = FALSE;
+  XMMATRIX rotate_matrix = XMMatrixIdentity ();
+
+  switch (method) {
+    case GST_VIDEO_ORIENTATION_IDENTITY:
+    case GST_VIDEO_ORIENTATION_AUTO:
+    case GST_VIDEO_ORIENTATION_CUSTOM:
+    default:
+      break;
+    case GST_VIDEO_ORIENTATION_90R:
+      rotate_matrix = XMLoadFloat4x4 (&g_matrix_90r);
+      rotated = TRUE;
+      break;
+    case GST_VIDEO_ORIENTATION_180:
+      rotate_matrix = XMLoadFloat4x4 (&g_matrix_180);
+      break;
+    case GST_VIDEO_ORIENTATION_90L:
+      rotate_matrix = XMLoadFloat4x4 (&g_matrix_90l);
+      rotated = TRUE;
+      break;
+    case GST_VIDEO_ORIENTATION_HORIZ:
+      rotate_matrix = XMLoadFloat4x4 (&g_matrix_horiz);
+      break;
+    case GST_VIDEO_ORIENTATION_VERT:
+      rotate_matrix = XMLoadFloat4x4 (&g_matrix_vert);
+      break;
+    case GST_VIDEO_ORIENTATION_UL_LR:
+      rotate_matrix = XMLoadFloat4x4 (&g_matrix_ul_lr);
+      rotated = TRUE;
+      break;
+    case GST_VIDEO_ORIENTATION_UR_LL:
+      rotate_matrix = XMLoadFloat4x4 (&g_matrix_ur_ll);
+      rotated = TRUE;
+      break;
+  }
+
+  if (rotated)
+    aspect_ratio = viewport_height / viewport_width;
+  else
+    aspect_ratio = viewport_width / viewport_height;
+
+  /* Apply user specified transform matrix first, then rotate-method */
+  XMMATRIX scale = XMMatrixScaling (scale_x * aspect_ratio, scale_y, 1.0);
+
+  XMMATRIX rotate =
+      XMMatrixRotationX (XMConvertToRadians (rotation_x)) *
+      XMMatrixRotationY (XMConvertToRadians (-rotation_y)) *
+      XMMatrixRotationZ (XMConvertToRadians (-rotation_z));
+
+  XMMATRIX view = XMMatrixLookAtLH (XMVectorSet (0.0, 0.0, -1.0, 0.0),
+      XMVectorSet (0.0, 0.0, 0.0, 0.0), XMVectorSet (0.0, 1.0, 0.0, 0.0));
+
+  XMMATRIX proj;
+  if (ortho) {
+    proj = XMMatrixOrthographicOffCenterLH (-aspect_ratio,
+        aspect_ratio, -1.0, 1.0, 0.1, 100.0);
+  } else {
+    proj = XMMatrixPerspectiveFovLH (XMConvertToRadians (fov),
+        aspect_ratio, 0.1, 100.0);
+  }
+
+  XMMATRIX mvp = scale * rotate * view * proj * rotate_matrix;
+
+  XMFLOAT4X4 matrix;
+  XMStoreFloat4x4 (&matrix, mvp);
+
+  for (guint i = 0; i < 4; i++) {
+    for (guint j = 0; j < 4; j++) {
+      transform_matrix[i * 4 + j] = matrix.m[i][j];
+    }
+  }
+}
+
+struct SamplingMethodMap
+{
+  GstD3D11SamplingMethod method;
+  D3D11_FILTER filter;
+};
+
+static const SamplingMethodMap sampling_method_map[] = {
+  {GST_D3D11_SAMPLING_METHOD_NEAREST, D3D11_FILTER_MIN_MAG_MIP_POINT},
+  {GST_D3D11_SAMPLING_METHOD_BILINEAR, D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT},
+  {GST_D3D11_SAMPLING_METHOD_LINEAR_MINIFICATION,
+      D3D11_FILTER_MIN_LINEAR_MAG_MIP_POINT},
+  {GST_D3D11_SAMPLING_METHOD_ANISOTROPIC, D3D11_FILTER_ANISOTROPIC},
+};
+
+D3D11_FILTER
+gst_d3d11_sampling_method_to_native (GstD3D11SamplingMethod method)
+{
+  for (guint i = 0; i < G_N_ELEMENTS (sampling_method_map); i++) {
+    if (sampling_method_map[i].method == method)
+      return sampling_method_map[i].filter;
+  }
+
+  return D3D11_FILTER_MIN_MAG_MIP_POINT;
 }

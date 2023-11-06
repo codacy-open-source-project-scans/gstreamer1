@@ -49,68 +49,35 @@
 #include "gstd3d11dxgicapture.h"
 #include "gstd3d11pluginutils.h"
 #include <string.h>
+#include <mutex>
 
 #include <wrl.h>
+
+#define _XM_NO_INTRINSICS_
+#include <DirectXMath.h>
 
 GST_DEBUG_CATEGORY_EXTERN (gst_d3d11_screen_capture_debug);
 #define GST_CAT_DEFAULT gst_d3d11_screen_capture_debug
 
 /* *INDENT-OFF* */
 using namespace Microsoft::WRL;
+using namespace DirectX;
 
 /* List of GstD3D11DxgiCapture weakref */
-G_LOCK_DEFINE_STATIC (dupl_list_lock);
+static std::mutex dupl_list_lock;
 static GList *dupl_list = nullptr;
 
-/* Below implemenation were taken from Microsoft sample
+/* Below implementation were taken from Microsoft sample
  * https://github.com/microsoft/Windows-classic-samples/tree/master/Samples/DXGIDesktopDuplication
  */
 #define NUMVERTICES 6
 #define BPP 4
 
-/* Define our own MyFLOAT3 and MyFLOAT2 struct, since MinGW doesn't support
- * DirectXMath.h
- */
-struct MyFLOAT3
+struct VERTEX
 {
-  float x;
-  float y;
-  float z;
-
-  MyFLOAT3() = default;
-
-  MyFLOAT3(const MyFLOAT3&) = default;
-  MyFLOAT3& operator=(const MyFLOAT3&) = default;
-
-  MyFLOAT3(MyFLOAT3&&) = default;
-  MyFLOAT3& operator=(MyFLOAT3&&) = default;
-
-  constexpr MyFLOAT3(float _x, float _y, float _z) : x(_x), y(_y), z(_z) {}
-  explicit MyFLOAT3(const float *pArray) : x(pArray[0]), y(pArray[1]), z(pArray[2]) {}
+  XMFLOAT3 Pos;
+  XMFLOAT2 TexCoord;
 };
-
-struct MyFLOAT2
-{
-  float x;
-  float y;
-
-  MyFLOAT2() = default;
-
-  MyFLOAT2(const MyFLOAT2&) = default;
-  MyFLOAT2& operator=(const MyFLOAT2&) = default;
-
-  MyFLOAT2(MyFLOAT2&&) = default;
-  MyFLOAT2& operator=(MyFLOAT2&&) = default;
-
-  constexpr MyFLOAT2(float _x, float _y) : x(_x), y(_y) {}
-  explicit MyFLOAT2(const float *pArray) : x(pArray[0]), y(pArray[1]) {}
-};
-
-typedef struct
-{
-  MyFLOAT3 Pos;
-  MyFLOAT2 TexCoord;
-} VERTEX;
 
 /* List of expected error cases */
 /* These are the errors we expect from general Dxgi API due to a transition */
@@ -364,9 +331,7 @@ public:
 
   bool
   DrawMouse (GstD3D11Device * device, ID3D11RenderTargetView * rtv,
-      ID3D11VertexShader * vs, ID3D11PixelShader * ps,
-      ID3D11InputLayout * layout, ID3D11SamplerState * sampler,
-      ID3D11BlendState * blend, D3D11_BOX * cropBox)
+      ShaderResource * resource, D3D11_BOX * cropBox)
   {
     GST_TRACE ("Drawing mouse");
 
@@ -387,12 +352,12 @@ public:
 
     VERTEX Vertices[NUMVERTICES] =
     {
-      {MyFLOAT3(-1.0f, -1.0f, 0), MyFLOAT2(0.0f, 1.0f)},
-      {MyFLOAT3(-1.0f, 1.0f, 0), MyFLOAT2(0.0f, 0.0f)},
-      {MyFLOAT3(1.0f, -1.0f, 0), MyFLOAT2(1.0f, 1.0f)},
-      {MyFLOAT3(1.0f, -1.0f, 0), MyFLOAT2(1.0f, 1.0f)},
-      {MyFLOAT3(-1.0f, 1.0f, 0), MyFLOAT2(0.0f, 0.0f)},
-      {MyFLOAT3(1.0f, 1.0f, 0), MyFLOAT2(1.0f, 0.0f)},
+      {XMFLOAT3(-1.0f, -1.0f, 0), XMFLOAT2(0.0f, 1.0f)},
+      {XMFLOAT3(-1.0f, 1.0f, 0), XMFLOAT2(0.0f, 0.0f)},
+      {XMFLOAT3(1.0f, -1.0f, 0), XMFLOAT2(1.0f, 1.0f)},
+      {XMFLOAT3(1.0f, -1.0f, 0), XMFLOAT2(1.0f, 1.0f)},
+      {XMFLOAT3(-1.0f, 1.0f, 0), XMFLOAT2(0.0f, 0.0f)},
+      {XMFLOAT3(1.0f, 1.0f, 0), XMFLOAT2(1.0f, 0.0f)},
     };
 
     D3D11_TEXTURE2D_DESC FullDesc;
@@ -528,14 +493,14 @@ public:
     ID3D11Buffer *vert_buf = VertexBufferMouse.Get();
 
     context_handle->IASetVertexBuffers(0, 1, &vert_buf, &Stride, &Offset);
-    context_handle->OMSetBlendState(blend, BlendFactor, 0xFFFFFFFF);
+    context_handle->OMSetBlendState(resource->blend, BlendFactor, 0xFFFFFFFF);
     context_handle->OMSetRenderTargets(1, &rtv, nullptr);
-    context_handle->VSSetShader(vs, nullptr, 0);
-    context_handle->PSSetShader(ps, nullptr, 0);
+    context_handle->VSSetShader(resource->vs, nullptr, 0);
+    context_handle->PSSetShader(resource->ps, nullptr, 0);
     context_handle->PSSetShaderResources(0, 1, &srv);
-    context_handle->PSSetSamplers(0, 1, &sampler);
+    context_handle->PSSetSamplers(0, 1, &resource->sampler);
     context_handle->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    context_handle->IASetInputLayout(layout);
+    context_handle->IASetInputLayout(resource->layout);
 
     D3D11_VIEWPORT VP;
     VP.Width = static_cast<FLOAT>(FullDesc.Width);
@@ -545,6 +510,7 @@ public:
     VP.TopLeftX = 0.0f;
     VP.TopLeftY = 0.0f;
     context_handle->RSSetViewports(1, &VP);
+    context_handle->RSSetState (resource->rs);
 
     context_handle->Draw(NUMVERTICES, 0);
 
@@ -627,6 +593,7 @@ private:
     ComPtr<ID3D11VertexShader> vs;
     ComPtr<ID3D11PixelShader> ps;
     ComPtr<ID3D11InputLayout> layout;
+    ComPtr<ID3D11RasterizerState> rs;
     HRESULT hr;
 
     hr = gst_d3d11_get_vertex_shader_coord (device, &vs, &layout);
@@ -649,11 +616,18 @@ private:
       return false;
     }
 
+    hr = gst_d3d11_device_get_rasterizer (device, &rs);
+    if (!gst_d3d11_result (hr, device)) {
+      GST_ERROR ("Couldn't get rasterizer state");
+      return false;
+    }
+
     /* Everything is prepared now */
     vs_ = vs;
     ps_ = ps;
     layout_ = layout;
     sampler_ = sampler;
+    rs_ = rs;
 
     return true;
   }
@@ -1030,16 +1004,16 @@ private:
         DestDirty.bottom = Dirty->right;
 
         Vertices[0].TexCoord =
-            MyFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->bottom / static_cast<FLOAT>(ThisDesc->Height));
         Vertices[1].TexCoord =
-            MyFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->bottom / static_cast<FLOAT>(ThisDesc->Height));
         Vertices[2].TexCoord =
-            MyFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->top / static_cast<FLOAT>(ThisDesc->Height));
         Vertices[5].TexCoord =
-            MyFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->top / static_cast<FLOAT>(ThisDesc->Height));
         break;
       case DXGI_MODE_ROTATION_ROTATE180:
@@ -1049,16 +1023,16 @@ private:
         DestDirty.bottom = Height - Dirty->top;
 
         Vertices[0].TexCoord =
-            MyFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->top / static_cast<FLOAT>(ThisDesc->Height));
         Vertices[1].TexCoord =
-            MyFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->bottom / static_cast<FLOAT>(ThisDesc->Height));
         Vertices[2].TexCoord =
-            MyFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->top / static_cast<FLOAT>(ThisDesc->Height));
         Vertices[5].TexCoord =
-            MyFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->bottom / static_cast<FLOAT>(ThisDesc->Height));
         break;
       case DXGI_MODE_ROTATION_ROTATE270:
@@ -1068,56 +1042,56 @@ private:
         DestDirty.bottom = Height - Dirty->left;
 
         Vertices[0].TexCoord =
-            MyFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->top / static_cast<FLOAT>(ThisDesc->Height));
         Vertices[1].TexCoord =
-            MyFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->top / static_cast<FLOAT>(ThisDesc->Height));
         Vertices[2].TexCoord =
-            MyFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->bottom / static_cast<FLOAT>(ThisDesc->Height));
         Vertices[5].TexCoord =
-            MyFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->bottom / static_cast<FLOAT>(ThisDesc->Height));
         break;
       case DXGI_MODE_ROTATION_UNSPECIFIED:
       case DXGI_MODE_ROTATION_IDENTITY:
       default:
         Vertices[0].TexCoord =
-            MyFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->bottom / static_cast<FLOAT>(ThisDesc->Height));
         Vertices[1].TexCoord =
-            MyFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->left / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->top / static_cast<FLOAT>(ThisDesc->Height));
         Vertices[2].TexCoord =
-            MyFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->bottom / static_cast<FLOAT>(ThisDesc->Height));
         Vertices[5].TexCoord =
-            MyFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
+            XMFLOAT2(Dirty->right / static_cast<FLOAT>(ThisDesc->Width),
                      Dirty->top / static_cast<FLOAT>(ThisDesc->Height));
         break;
     }
 
     /* Set positions */
     Vertices[0].Pos =
-        MyFLOAT3(
+        XMFLOAT3(
           (DestDirty.left - CenterX) / static_cast<FLOAT>(CenterX),
           -1 * (DestDirty.bottom - CenterY) / static_cast<FLOAT>(CenterY),
           0.0f);
     Vertices[1].Pos =
-        MyFLOAT3(
+        XMFLOAT3(
           (DestDirty.left - CenterX) / static_cast<FLOAT>(CenterX),
           -1 * (DestDirty.top - CenterY) / static_cast<FLOAT>(CenterY),
           0.0f);
     Vertices[2].Pos =
-        MyFLOAT3(
+        XMFLOAT3(
           (DestDirty.right - CenterX) / static_cast<FLOAT>(CenterX),
           -1 * (DestDirty.bottom - CenterY) / static_cast<FLOAT>(CenterY),
           0.0f);
     Vertices[3].Pos = Vertices[2].Pos;
     Vertices[4].Pos = Vertices[1].Pos;
     Vertices[5].Pos =
-        MyFLOAT3(
+        XMFLOAT3(
           (DestDirty.right - CenterX) / static_cast<FLOAT>(CenterX),
           -1 * (DestDirty.top - CenterY) / static_cast<FLOAT>(CenterY),
           0.0f);
@@ -1233,6 +1207,7 @@ private:
     VP.TopLeftX = 0.0f;
     VP.TopLeftY = 0.0f;
     device_context->RSSetViewports(1, &VP);
+    device_context->RSSetState (rs_.Get ());
 
     device_context->Draw(NUMVERTICES * DirtyCount, 0);
 
@@ -1442,6 +1417,7 @@ private:
   ComPtr<ID3D11PixelShader> ps_;
   ComPtr<ID3D11InputLayout> layout_;
   ComPtr<ID3D11SamplerState> sampler_;
+  ComPtr<ID3D11RasterizerState> rs_;
   ComPtr<IDXGIOutputDuplication> dupl_;
 
   /* frame metadata */
@@ -1496,9 +1472,7 @@ gst_d3d11_dxgi_capture_get_colorimetry (GstD3D11ScreenCapture * capture,
 static GstFlowReturn
 gst_d3d11_dxgi_capture_do_capture (GstD3D11ScreenCapture * capture,
     GstD3D11Device * device, ID3D11Texture2D * texture,
-    ID3D11RenderTargetView * rtv, ID3D11VertexShader * vs,
-    ID3D11PixelShader * ps, ID3D11InputLayout * layout,
-    ID3D11SamplerState * sampler, ID3D11BlendState * blend,
+    ID3D11RenderTargetView * rtv, ShaderResource * resource,
     D3D11_BOX * crop_box, gboolean draw_mouse);
 
 #define gst_d3d11_dxgi_capture_parent_class parent_class
@@ -1707,9 +1681,8 @@ static void
 gst_d3d11_dxgi_capture_weak_ref_notify (gpointer data,
     GstD3D11DxgiCapture * dupl)
 {
-  G_LOCK (dupl_list_lock);
+  std::lock_guard < std::mutex > lk (dupl_list_lock);
   dupl_list = g_list_remove (dupl_list, dupl);
-  G_UNLOCK (dupl_list_lock);
 }
 
 GstD3D11ScreenCapture *
@@ -1727,21 +1700,16 @@ gst_d3d11_dxgi_capture_new (GstD3D11Device * device, HMONITOR monitor_handle)
    * See also
    * https://docs.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutput1-duplicateoutput#remarks
    */
-  G_LOCK (dupl_list_lock);
+  std::lock_guard < std::mutex > lk (dupl_list_lock);
   for (iter = dupl_list; iter; iter = g_list_next (iter)) {
     GstD3D11DxgiCapture *dupl = (GstD3D11DxgiCapture *) iter->data;
 
     if (dupl->monitor_handle == monitor_handle) {
       GST_DEBUG ("Found configured desktop dup object for monitor handle %p",
           monitor_handle);
-      self = (GstD3D11DxgiCapture *) gst_object_ref (dupl);
-      break;
+      gst_object_ref (dupl);
+      return GST_D3D11_SCREEN_CAPTURE_CAST (dupl);
     }
-  }
-
-  if (self) {
-    G_UNLOCK (dupl_list_lock);
-    return GST_D3D11_SCREEN_CAPTURE_CAST (self);
   }
 
   self = (GstD3D11DxgiCapture *) g_object_new (GST_TYPE_D3D11_DXGI_CAPTURE,
@@ -1750,7 +1718,6 @@ gst_d3d11_dxgi_capture_new (GstD3D11Device * device, HMONITOR monitor_handle)
   if (!self->device) {
     GST_WARNING_OBJECT (self, "Couldn't configure desktop dup object");
     gst_object_unref (self);
-    G_UNLOCK (dupl_list_lock);
 
     return nullptr;
   }
@@ -1758,8 +1725,6 @@ gst_d3d11_dxgi_capture_new (GstD3D11Device * device, HMONITOR monitor_handle)
   g_object_weak_ref (G_OBJECT (self),
       (GWeakNotify) gst_d3d11_dxgi_capture_weak_ref_notify, nullptr);
   dupl_list = g_list_append (dupl_list, self);
-
-  G_UNLOCK (dupl_list_lock);
 
   return GST_D3D11_SCREEN_CAPTURE_CAST (self);
 }
@@ -1858,9 +1823,7 @@ gst_d3d11_dxgi_capture_get_colorimetry (GstD3D11ScreenCapture * capture,
 static GstFlowReturn
 gst_d3d11_dxgi_capture_do_capture (GstD3D11ScreenCapture * capture,
     GstD3D11Device * device, ID3D11Texture2D * texture,
-    ID3D11RenderTargetView * rtv, ID3D11VertexShader * vs,
-    ID3D11PixelShader * ps, ID3D11InputLayout * layout,
-    ID3D11SamplerState * sampler, ID3D11BlendState * blend,
+    ID3D11RenderTargetView * rtv, ShaderResource * resource,
     D3D11_BOX * crop_box, gboolean draw_mouse)
 {
   GstD3D11DxgiCapture *self = GST_D3D11_DXGI_CAPTURE (capture);
@@ -1929,10 +1892,8 @@ gst_d3d11_dxgi_capture_do_capture (GstD3D11ScreenCapture * capture,
   if (ret != GST_FLOW_OK)
     goto out;
 
-  if (draw_mouse) {
-    self->dupl_obj->DrawMouse (device,
-        rtv, vs, ps, layout, sampler, blend, crop_box);
-  }
+  if (draw_mouse)
+    self->dupl_obj->DrawMouse (device, rtv, resource, crop_box);
 
 out:
   if (shared_device)

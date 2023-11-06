@@ -67,6 +67,9 @@ variables:
 workflow:
   # https://docs.gitlab.com/ee/ci/yaml/index.html#switch-between-branch-pipelines-and-merge-request-pipelines
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      variables:
+        GIT_FETCH_EXTRA_FLAGS: '--no-tags'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       variables:
         GIT_FETCH_EXTRA_FLAGS: '--no-tags'
@@ -102,6 +105,8 @@ trigger:
   script:
     - echo "Trigger job done, now running the pipeline."
   rules:
+    # If this pipeline is triggered by a schedule, run automatically
+    - if: $CI_PIPELINE_SOURCE == "schedule"
     # If the MR is assigned to the Merge bot, trigger the pipeline automatically
     - if: '$CI_MERGE_REQUEST_ASSIGNEES == "gstreamer-merge-bot"'
     # Require explicit action to trigger tests post merge, but we want to
@@ -190,7 +195,7 @@ windows amd64 docker:
     - ci/docker/windows/container.ps1 $CI_REGISTRY $CI_REGISTRY_USER $CI_REGISTRY_PASSWORD $WINDOWS_IMAGE $WINDOWS_UPSTREAM_IMAGE $DOCKERFILE
 
 .macos image:
-  image: "registry.freedesktop.org/gstreamer/gstreamer/macos-arm64/13-ventura:2023-08-29.1"
+  image: "registry.freedesktop.org/gstreamer/gstreamer/macos-arm64/14-sonoma:2023-10-25.0"
   tags:
     - gst-mac-arm
 
@@ -760,6 +765,55 @@ gstreamer-full-minimal static build:
   - meson test -C build test-gst-full-features --test-args "-e filesrc,identity,fakesink -E filesink,capsfilter -t audio/x-wav -T video/vivo -d alsadeviceprovider -D v4l2deviceprovider -l GstVideoMultiviewFlagsSet"
   - strip build/libgstreamer-full-1.0.so
   - ls -l build/libgstreamer-full-1.0.so
+
+# v4l2-stateless-decoders tests
+fluster v4l2-stateless on visl:
+  extends: 'gstreamer-full static build'
+  stage: 'test'
+  variables:
+    BUILD_GST_DEBUG: '-Dgstreamer:gst_debug=false'
+    GST_WERROR: "true"
+    BUILD_TYPE: "--default-library=static"
+    MESON_ARGS: >-
+      -Dvirtme_kernel_image=/opt/linux/bzImage
+      -Dauto_features=disabled
+      -Dgstreamer:check=enabled
+      -Ddoc=disabled
+      -Dtests=enabled
+      -Dtools=enabled
+      -Dbase=enabled
+      -Dbad=enabled
+      -Dugly=disabled
+      -Dlibav=disabled
+      -Drtsp_server=disabled
+      -Dges=disabled
+      -Dgst-plugins-bad:debugutils=enabled
+      -Dgst-plugins-bad:ivfparse=enabled
+      -Dgst-plugins-bad:v4l2codecs=enabled
+      -Dgst-plugins-bad:videoparsers=enabled
+      -Dgst-plugins-base:app=enabled
+      -Dgst-plugins-base:videoconvertscale=enabled
+      -Dgst-plugins-base:typefind=enabled
+      -Dgst-plugins-base:playback=enabled
+      -Dgst-plugins-good:matroska=enabled
+    SUBPROJECTS_CACHE_DIR: "/subprojects"
+  script:
+  - *build
+  - meson test -C build -v --suite v4l2-stateless-decoders
+  artifacts:
+    reports:
+      junit: build/fluster-results-*.xml
+  rules:
+    - changes:
+      - .gitlab-ci.yml
+      - .gitlab-image-tags.yml
+      - subprojects/gst-plugins-bad/sys/v4l2codecs/*
+      - subprojects/gst-plugins-bad/gst-libs/gst/codecparsers/*
+      - subprojects/gst-plugins-bad/gst-libs/gst/codecs/*
+      - subprojects/gst-plugins-bad/gst/videoparsers/*
+      - tests/virtme/*
+      - ci/scripts/build-linux.sh
+      - ci/docker/fedora/*
 
 # Valgrind
 .valgrind fedora x86_64:

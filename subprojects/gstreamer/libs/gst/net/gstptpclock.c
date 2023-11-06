@@ -289,6 +289,19 @@ static PtpClockIdentity ptp_clock_id = { GST_PTP_CLOCK_ID_NONE, 0 };
 
 typedef struct
 {
+  PtpClockIdentity master_clock_identity;
+  guint8 iface_idx;
+
+  GstClockTime announce_interval;       /* last interval we received */
+  GQueue announce_messages;
+  guint64 timed_out_sync;       /* how often did this sender continously time out a FOLLOW_UP */
+  guint64 timed_out_delay_resp; /* how often did this sender continously time out a DELAY_RESP */
+} PtpAnnounceSender;
+
+typedef struct
+{
+  PtpAnnounceSender *sender;
+
   GstClockTime receive_time;
 
   PtpClockIdentity master_clock_identity;
@@ -306,17 +319,7 @@ typedef struct
 
 typedef struct
 {
-  PtpClockIdentity master_clock_identity;
-  guint8 iface_idx;
-
-  GstClockTime announce_interval;       /* last interval we received */
-  GQueue announce_messages;
-} PtpAnnounceSender;
-
-typedef struct
-{
   guint domain;
-  PtpClockIdentity master_clock_identity;
 
   guint16 sync_seqnum;
   GstClockTime sync_recv_time_local;    /* t2 */
@@ -363,11 +366,13 @@ typedef struct
 
   /* Last SYNC or FOLLOW_UP timestamp we received */
   GstClockTime last_ptp_sync_time;
+  GstClockTime last_ptp_sync_time_local;
   GstClockTime sync_interval;
 
   GstClockTime mean_path_delay;
   GstClockTime last_delay_req, min_delay_req_interval;
   guint16 last_delay_req_seqnum;
+  GstClockTime last_ptp_delay_resp_time_local;
 
   GstClockTime last_path_delays[MEDIAN_PRE_FILTERING_WINDOW];
   gint last_path_delays_missing;
@@ -696,20 +701,35 @@ parse_ptp_message (PtpMessage * msg, const guint8 * data, gsize size)
 
 static gint
 compare_announce_message (const PtpAnnounceMessage * a,
-    const PtpAnnounceMessage * b)
+    const PtpAnnounceMessage * b, gboolean skip_tiebreakers)
 {
   /* IEEE 1588 Figure 27 */
   if (a->grandmaster_identity == b->grandmaster_identity) {
-    if (a->steps_removed + 1 < b->steps_removed)
+    // Random threshold of 4 timeouts to completely ignore all steps removed
+    if (a->sender->timed_out_delay_resp + a->sender->timed_out_sync + 4 <
+        b->sender->timed_out_delay_resp + b->sender->timed_out_sync)
       return -1;
-    else if (a->steps_removed > b->steps_removed + 1)
+    if (a->sender->timed_out_delay_resp + a->sender->timed_out_sync >
+        b->sender->timed_out_delay_resp + b->sender->timed_out_sync + 4)
       return 1;
 
-    /* Error cases are filtered out earlier */
     if (a->steps_removed < b->steps_removed)
       return -1;
     else if (a->steps_removed > b->steps_removed)
       return 1;
+
+    // If both are the same number of steps removed, prefer the clock with
+    // fewer timeouts before going to the tie breakers based on clock
+    // identities and interface indices
+    if (a->sender->timed_out_delay_resp + a->sender->timed_out_sync <
+        b->sender->timed_out_delay_resp + b->sender->timed_out_sync)
+      return -1;
+    if (a->sender->timed_out_delay_resp + a->sender->timed_out_sync >
+        b->sender->timed_out_delay_resp + b->sender->timed_out_sync)
+      return 1;
+
+    if (skip_tiebreakers)
+      return 0;
 
     /* Error cases are filtered out earlier */
     if (a->master_clock_identity.clock_identity <
@@ -819,9 +839,56 @@ select_best_master_clock (PtpDomainData * domain, GstClockTime now)
   for (l = qualified_messages; l; l = l->next) {
     PtpAnnounceMessage *msg = l->data;
 
-    if (!best || compare_announce_message (msg, best) < 0)
+    if (!best || compare_announce_message (msg, best, FALSE) < 0)
       best = msg;
   }
+
+  GST_DEBUG ("Found master clock for domain %u: 0x%016" G_GINT64_MODIFIER
+      "x %u on interface %u with grandmaster clock 0x%016" G_GINT64_MODIFIER
+      "x", domain->domain, best->master_clock_identity.clock_identity,
+      best->master_clock_identity.port_number, best->iface_idx,
+      best->grandmaster_identity);
+
+  // Check if the newly selected best clock and the previous one are
+  // equivalent except for tiebreakers. In that case, don't actually switch
+  // to avoid switching regularly between clocks.
+  if (domain->have_master_clock &&
+      (compare_clock_identity (&domain->master_clock_identity,
+              &best->master_clock_identity) != 0
+          || domain->iface_idx != best->iface_idx)
+      ) {
+    // Find announce sender for the currently selected clock
+    for (l = domain->announce_senders; l; l = l->next) {
+      PtpAnnounceSender *sender = l->data;
+
+      if (compare_clock_identity (&domain->master_clock_identity,
+              &sender->master_clock_identity) == 0
+          && domain->iface_idx == sender->iface_idx) {
+
+        // Find qualified message for it (if there is none then it timed out)
+        for (m = qualified_messages; m; m = m->next) {
+          PtpAnnounceMessage *msg = m->data;
+
+          if (compare_clock_identity (&sender->master_clock_identity,
+                  &msg->master_clock_identity) == 0
+              && sender->iface_idx == msg->iface_idx) {
+
+            if (compare_announce_message (msg, best, TRUE) == 0) {
+              GST_DEBUG
+                  ("Currently selected master clock for domain %u is equivalent",
+                  domain->domain);
+              best = msg;
+            }
+
+            break;
+          }
+        }
+
+        break;
+      }
+    }
+  }
+
   g_clear_pointer (&qualified_messages, g_list_free);
 
   if (domain->have_master_clock
@@ -830,9 +897,10 @@ select_best_master_clock (PtpDomainData * domain, GstClockTime now)
       && domain->iface_idx == best->iface_idx) {
     GST_DEBUG ("Master clock in domain %u did not change", domain->domain);
   } else {
-    GST_DEBUG ("Selected master clock for domain %u: 0x%016" G_GINT64_MODIFIER
-        "x %u on interface %u with grandmaster clock 0x%016" G_GINT64_MODIFIER
-        "x", domain->domain, best->master_clock_identity.clock_identity,
+    GST_DEBUG ("Selected new master clock for domain %u: 0x%016"
+        G_GINT64_MODIFIER "x %u on interface %u with grandmaster clock 0x%016"
+        G_GINT64_MODIFIER "x", domain->domain,
+        best->master_clock_identity.clock_identity,
         best->master_clock_identity.port_number, best->iface_idx,
         best->grandmaster_identity);
 
@@ -850,9 +918,11 @@ select_best_master_clock (PtpDomainData * domain, GstClockTime now)
       domain->mean_path_delay = 0;
       domain->last_delay_req = 0;
       domain->last_path_delays_missing = 9;
+      domain->last_ptp_delay_resp_time_local = 0;
       domain->min_delay_req_interval = 0;
       domain->sync_interval = 0;
       domain->last_ptp_sync_time = 0;
+      domain->last_ptp_sync_time_local = 0;
       domain->skipped_updates = 0;
       g_queue_foreach (&domain->pending_syncs, (GFunc) ptp_pending_sync_free,
           NULL);
@@ -977,6 +1047,7 @@ handle_announce_message (PtpMessage * msg, guint8 iface_idx,
   }
 
   announce = g_new0 (PtpAnnounceMessage, 1);
+  announce->sender = sender;
   announce->receive_time = receive_time;
   announce->sequence_id = msg->sequence_id;
   memcpy (&announce->master_clock_identity, &msg->source_port_identity,
@@ -1620,6 +1691,20 @@ handle_sync_message (PtpMessage * msg, guint8 iface_idx,
       return;
     }
     domain->last_ptp_sync_time = sync->sync_send_time_remote;
+    domain->last_ptp_sync_time_local = receive_time;
+
+    for (l = domain->announce_senders; l; l = l->next) {
+      PtpAnnounceSender *sender = l->data;
+
+      if (compare_clock_identity (&domain->master_clock_identity,
+              &sender->master_clock_identity) == 0
+          && domain->iface_idx == sender->iface_idx) {
+
+        sender->timed_out_sync = 0;
+
+        break;
+      }
+    }
 
     if (send_delay_req (domain, sync)) {
       /* Sent delay request */
@@ -1721,6 +1806,20 @@ handle_follow_up_message (PtpMessage * msg, guint8 iface_idx,
     return;
   }
   domain->last_ptp_sync_time = sync->sync_send_time_remote;
+  domain->last_ptp_sync_time_local = receive_time;
+
+  for (l = domain->announce_senders; l; l = l->next) {
+    PtpAnnounceSender *sender = l->data;
+
+    if (compare_clock_identity (&domain->master_clock_identity,
+            &sender->master_clock_identity) == 0
+        && domain->iface_idx == sender->iface_idx) {
+
+      sender->timed_out_sync = 0;
+
+      break;
+    }
+  }
 
   if (send_delay_req (domain, sync)) {
     /* Sent delay request */
@@ -1828,6 +1927,21 @@ handle_delay_resp_message (PtpMessage * msg, guint8 iface_idx,
     g_queue_remove (&domain->pending_syncs, sync);
     ptp_pending_sync_free (sync);
     return;
+  }
+
+  domain->last_ptp_delay_resp_time_local = receive_time;
+
+  for (l = domain->announce_senders; l; l = l->next) {
+    PtpAnnounceSender *sender = l->data;
+
+    if (compare_clock_identity (&domain->master_clock_identity,
+            &sender->master_clock_identity) == 0
+        && domain->iface_idx == sender->iface_idx) {
+
+      sender->timed_out_delay_resp = 0;
+
+      break;
+    }
   }
 
   if (update_mean_path_delay (domain, sync))
@@ -2251,7 +2365,8 @@ cleanup_cb (gpointer data)
         GList *tmp = n->next;
 
         if (compare_clock_identity (&sender->master_clock_identity,
-                &domain->master_clock_identity) == 0)
+                &domain->master_clock_identity) == 0
+            && sender->iface_idx == domain->iface_idx)
           GST_WARNING ("currently selected master clock timed out");
         g_free (sender);
         domain->announce_senders =
@@ -2261,12 +2376,13 @@ cleanup_cb (gpointer data)
         n = n->next;
       }
     }
-    select_best_master_clock (domain, now);
 
     /* Clean up any pending syncs */
     for (n = domain->pending_syncs.head; n;) {
       PtpPendingSync *sync = n->data;
       gboolean timed_out = FALSE;
+      gboolean clock_timed_out_sync = FALSE;
+      gboolean clock_timed_out_delay_resp = FALSE;
 
       /* Time out pending syncs after 4 sync intervals or 10 seconds,
        * and pending delay reqs after 4 delay req intervals or 10 seconds
@@ -2277,10 +2393,48 @@ cleanup_cb (gpointer data)
                   4 * domain->min_delay_req_interval < now)
               || (sync->delay_req_send_time_local + 10 * GST_SECOND < now))) {
         timed_out = TRUE;
-      } else if ((domain->sync_interval != 0
-              && sync->sync_recv_time_local + 4 * domain->sync_interval < now)
-          || (sync->sync_recv_time_local + 10 * GST_SECOND < now)) {
+
+        // If no newer delay resp received in the meantime, downgrade the
+        // selected clock
+        if (domain->last_ptp_delay_resp_time_local <
+            sync->delay_req_send_time_local) {
+          clock_timed_out_delay_resp = TRUE;
+        }
+      } else if (sync->follow_up_recv_time_local == GST_CLOCK_TIME_NONE && (
+              (domain->sync_interval != 0
+                  && sync->sync_recv_time_local + 4 * domain->sync_interval <
+                  now)
+              || (sync->sync_recv_time_local + 10 * GST_SECOND < now))) {
         timed_out = TRUE;
+
+        // If no newer sync/follow-up received in the meantime, downgrade the
+        // selected clock
+        if (domain->last_ptp_sync_time_local < sync->sync_recv_time_local) {
+          clock_timed_out_sync = TRUE;
+        }
+      }
+
+      // If the clock is timed out then downgrade it now in case there is a
+      // better clock for the domain that can be selected below.
+      if (domain->have_master_clock && (clock_timed_out_sync
+              || clock_timed_out_delay_resp)) {
+        GST_DEBUG ("Currently selected clock timed out, downgrading");
+
+        for (m = domain->announce_senders; m; m = m->next) {
+          PtpAnnounceSender *sender = m->data;
+
+          if (compare_clock_identity (&domain->master_clock_identity,
+                  &sender->master_clock_identity) == 0
+              && domain->iface_idx == sender->iface_idx) {
+
+            if (clock_timed_out_sync)
+              sender->timed_out_sync++;
+            if (clock_timed_out_delay_resp)
+              sender->timed_out_delay_resp++;
+
+            break;
+          }
+        }
       }
 
       if (timed_out) {
@@ -2292,6 +2446,8 @@ cleanup_cb (gpointer data)
         n = n->next;
       }
     }
+
+    select_best_master_clock (domain, now);
   }
 
   return G_SOURCE_CONTINUE;
@@ -2316,8 +2472,8 @@ ptp_helper_main (gpointer data)
       STDERR_MESSAGE_HEADER_SIZE, G_PRIORITY_DEFAULT, NULL,
       (GAsyncReadyCallback) have_stderr_header, NULL);
 
-  /* Check all 5 seconds, if we have to cleanup ANNOUNCE or pending syncs message */
-  cleanup_source = g_timeout_source_new_seconds (5);
+  /* Check every 1 seconds, if we have to cleanup ANNOUNCE or pending syncs message */
+  cleanup_source = g_timeout_source_new_seconds (1);
   g_source_set_priority (cleanup_source, G_PRIORITY_DEFAULT);
   g_source_set_callback (cleanup_source, (GSourceFunc) cleanup_cb, NULL, NULL);
   g_source_attach (cleanup_source, main_context);

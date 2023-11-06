@@ -90,6 +90,7 @@ GType gst_d3d11_converter_backend_get_type (void);
   * @D3D11_FILTER_MIN_MAG_MIP_POINT
   * @D3D11_FILTER_MIN_LINEAR_MAG_MIP_POINT
   * @D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT
+  * @D3D11_FILTER_ANISOTROPIC
   *
   * Default is #D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT.
   *
@@ -193,5 +194,9 @@ GST_D3D11_API
 gboolean            gst_d3d11_converter_convert_buffer_unlocked (GstD3D11Converter * converter,
                                                                  GstBuffer * in_buf,
                                                                  GstBuffer * out_buf);
+
+GST_D3D11_API
+gboolean            gst_d3d11_converter_set_transform_matrix (GstD3D11Converter * converter,
+                                                              gfloat matrix[16]);
 
 G_END_DECLS
