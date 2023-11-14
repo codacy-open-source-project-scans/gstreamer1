@@ -61,6 +61,7 @@ struct _GstVulkanOperationPrivate
   gsize query_data_size;
   gsize query_data_stride;
   gpointer query_data;
+  gboolean op_submitted;
 
   gboolean has_sync2;
   gboolean has_video;
@@ -282,6 +283,7 @@ gst_vulkan_operation_reset (GstVulkanOperation * self)
 
   gst_vulkan_operation_discard_dependencies (self);
 
+  gst_vulkan_trash_list_wait (priv->trash_list, G_MAXUINT64);
   gst_vulkan_trash_list_gc (priv->trash_list);
 }
 
@@ -521,6 +523,8 @@ gst_vulkan_operation_end (GstVulkanOperation * self, GError ** error)
 
   gst_vulkan_fence_unref (fence);
 
+  gst_vulkan_trash_list_gc (priv->trash_list);
+
   GST_OBJECT_LOCK (self);
 
   for (i = 0; priv->deps.frames && i < priv->deps.frames->len; i++) {
@@ -545,6 +549,8 @@ gst_vulkan_operation_end (GstVulkanOperation * self, GError ** error)
 
   g_clear_pointer (&priv->barriers, g_array_unref);
   self->cmd_buf = NULL;
+
+  priv->op_submitted = TRUE;
 
   GST_OBJECT_UNLOCK (self);
 
@@ -1142,8 +1148,7 @@ gst_vulkan_operation_add_dependency_frame (GstVulkanOperation * self,
 #endif /* synchronization2 */
 #endif /* timeline semaphore */
 
-  GST_INFO_OBJECT (self, "No dependencies added because of missing extensions");
-  return FALSE;
+  return TRUE;
 }
 
 /**
@@ -1280,7 +1285,7 @@ gst_vulkan_operation_get_query (GstVulkanOperation * self, gpointer * result,
   g_return_val_if_fail (GST_IS_VULKAN_OPERATION (self), FALSE);
 
   priv = GET_PRIV (self);
-  if (!priv->query_pool || !priv->query_data)
+  if (!priv->query_pool || !priv->query_data || !priv->op_submitted)
     return TRUE;
 
 #if GST_VULKAN_HAVE_VIDEO_EXTENSIONS
