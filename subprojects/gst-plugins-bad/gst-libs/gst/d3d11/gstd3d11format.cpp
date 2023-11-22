@@ -152,7 +152,9 @@ gst_d3d11_dxgi_format_get_size (DXGI_FORMAT format, guint width, guint height,
     case DXGI_FORMAT_R8G8_B8G8_UNORM:
     case DXGI_FORMAT_Y210:
     case DXGI_FORMAT_Y410:
+    case DXGI_FORMAT_Y216:
     case DXGI_FORMAT_R16G16B16A16_UNORM:
+    case DXGI_FORMAT_Y416:
       offset[0] = 0;
       stride[0] = pitch;
       *size = pitch * height;
@@ -211,6 +213,10 @@ gst_d3d11_dxgi_format_to_gst (DXGI_FORMAT format)
       return GST_VIDEO_FORMAT_P010_10LE;
     case DXGI_FORMAT_P016:
       return GST_VIDEO_FORMAT_P016_LE;
+    case DXGI_FORMAT_Y216:
+      return GST_VIDEO_FORMAT_Y212_LE;
+    case DXGI_FORMAT_Y416:
+      return GST_VIDEO_FORMAT_Y412_LE;
     default:
       break;
   }
@@ -289,6 +295,8 @@ gst_d3d11_dxgi_format_get_alignment (DXGI_FORMAT format)
     case DXGI_FORMAT_NV12:
     case DXGI_FORMAT_P010:
     case DXGI_FORMAT_P016:
+    case DXGI_FORMAT_Y210:
+    case DXGI_FORMAT_Y216:
       return 2;
     default:
       break;

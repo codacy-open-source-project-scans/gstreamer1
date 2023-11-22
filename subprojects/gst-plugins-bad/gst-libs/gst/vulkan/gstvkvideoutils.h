@@ -21,7 +21,7 @@
 #pragma once
 
 #include <gst/gst.h>
-#include <gst/vulkan/vulkan.h>
+#include <gst/vulkan/gstvkapi.h>
 
 G_BEGIN_DECLS
 
@@ -34,21 +34,66 @@ G_BEGIN_DECLS
  */
 struct _GstVulkanVideoProfile
 {
+  /*< private >*/
 #if GST_VULKAN_HAVE_VIDEO_EXTENSIONS
   VkVideoProfileInfoKHR profile;
+  VkVideoDecodeUsageInfoKHR usage;
   union {
-    VkVideoDecodeH264ProfileInfoKHR h264;
-    VkVideoDecodeH265ProfileInfoKHR h265;
+    VkBaseInStructure base;
+    VkVideoDecodeH264ProfileInfoKHR h264dec;
+    VkVideoDecodeH265ProfileInfoKHR h265dec;
   } codec;
 #endif
-  /* <private> */
   gpointer _reserved[GST_PADDING];
 };
+
+/**
+ * GstVulkanVideoCapabilities:
+ *
+ * Since: 1.24
+ */
+struct _GstVulkanVideoCapabilities
+{
+  /*< private >*/
+#if GST_VULKAN_HAVE_VIDEO_EXTENSIONS
+  VkVideoCapabilitiesKHR caps;
+  union
+  {
+    VkBaseInStructure base;
+    VkVideoDecodeH264CapabilitiesKHR h264dec;
+    VkVideoDecodeH265CapabilitiesKHR h265dec;
+  } codec;
+#endif
+  gpointer _reserved[GST_PADDING];
+};
+
+/**
+ * GstVulkanVideoOperation:
+ * @GST_VULKAN_VIDEO_OPERATION_DECODE: decode operation
+ * @GST_VULKAN_VIDEO_OPERATION_ENCODE: encode operation
+ * @GST_VULKAN_VIDEO_OPERATION_UNKNOWN: unknown
+ *
+ * The type of video operation.
+ *
+ * Since: 1.24
+ */
+typedef enum  {
+  GST_VULKAN_VIDEO_OPERATION_DECODE = 0,
+  GST_VULKAN_VIDEO_OPERATION_ENCODE,
+  GST_VULKAN_VIDEO_OPERATION_UNKNOWN,
+} GstVulkanVideoOperation;
 
 GST_VULKAN_API
 GstCaps *               gst_vulkan_video_profile_to_caps        (const GstVulkanVideoProfile * profile);
 GST_VULKAN_API
 gboolean                gst_vulkan_video_profile_from_caps      (GstVulkanVideoProfile * profile,
-                                                                 GstCaps * caps);
+                                                                 GstCaps * caps,
+                                                                 GstVulkanVideoOperation video_operation);
+GST_VULKAN_API
+gboolean                gst_vulkan_video_profile_is_valid       (GstVulkanVideoProfile * profile,
+                                                                 guint codec);
+GST_VULKAN_API
+gboolean                gst_vulkan_video_profile_is_equal       (const GstVulkanVideoProfile * a,
+                                                                 const GstVulkanVideoProfile * b);
 
 G_END_DECLS

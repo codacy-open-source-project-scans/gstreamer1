@@ -45,6 +45,7 @@ struct _GstVulkanImageBufferPoolPrivate
   VkMemoryPropertyFlags mem_props;
   VkFormat vk_fmts[GST_VIDEO_MAX_PLANES];
   int n_imgs;
+  guint32 n_layers;
   gboolean has_profile;
   GstVulkanVideoProfile profile;
   GstVulkanOperation *exec;
@@ -104,7 +105,7 @@ gst_vulkan_image_buffer_pool_config_set_decode_caps (GstStructure * config,
 static inline gboolean
 gst_vulkan_image_buffer_pool_config_get_allocation_params (GstStructure *
     config, VkImageUsageFlags * usage, VkMemoryPropertyFlags * mem_props,
-    GstCaps ** decode_caps)
+    guint32 * n_layers, GstCaps ** decode_caps)
 {
   if (!gst_structure_get_uint (config, "usage", usage)) {
     *usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
@@ -114,6 +115,9 @@ gst_vulkan_image_buffer_pool_config_get_allocation_params (GstStructure *
 
   if (!gst_structure_get_uint (config, "memory-properties", mem_props))
     *mem_props = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+  if (!gst_structure_get_uint (config, "num-layers", n_layers))
+    *n_layers = 1;
 
   if (decode_caps)
     gst_structure_get (config, "decode-caps", GST_TYPE_CAPS, decode_caps, NULL);
@@ -157,7 +161,7 @@ gst_vulkan_image_buffer_pool_set_config (GstBufferPool * pool,
       GST_CAPS_FEATURES_MEMORY_SYSTEM_MEMORY);
 
   gst_vulkan_image_buffer_pool_config_get_allocation_params (config,
-      &priv->usage, &priv->mem_props, &decode_caps);
+      &priv->usage, &priv->mem_props, &priv->n_layers, &decode_caps);
 
   priv->has_profile = FALSE;
 #if GST_VULKAN_HAVE_VIDEO_EXTENSIONS
@@ -165,7 +169,8 @@ gst_vulkan_image_buffer_pool_set_config (GstBufferPool * pool,
               & (VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR
                   | VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR)) != 0)) {
     priv->has_profile =
-        gst_vulkan_video_profile_from_caps (&priv->profile, decode_caps);
+        gst_vulkan_video_profile_from_caps (&priv->profile, decode_caps,
+        GST_VULKAN_VIDEO_OPERATION_DECODE);
   }
 #endif
   gst_clear_caps (&decode_caps);
@@ -212,7 +217,7 @@ gst_vulkan_image_buffer_pool_set_config (GstBufferPool * pool,
     /* .format = fill per image,  */
     /* .extent = fill per plane, */
     .mipLevels = 1,
-    .arrayLayers = 1,
+    .arrayLayers = priv->n_layers,
     .samples = VK_SAMPLE_COUNT_1_BIT,
     .tiling = tiling,
     .usage = priv->usage,
@@ -313,24 +318,6 @@ image_failed:
   }
 }
 
-#if defined(VK_KHR_synchronization2)
-static gboolean
-_choose_queue (GstVulkanDevice * device, GstVulkanQueue * _queue,
-    gpointer user_data)
-{
-  GstVulkanQueue **queue = user_data;
-  guint flags =
-      device->physical_device->queue_family_props[_queue->family].queueFlags;
-
-  if ((flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != 0) {
-    *queue = gst_object_ref (_queue);
-    return FALSE;
-  }
-
-  return TRUE;
-}
-#endif
-
 static gboolean
 prepare_buffer (GstVulkanImageBufferPool * vk_pool, GstBuffer * buffer)
 {
@@ -345,7 +332,9 @@ prepare_buffer (GstVulkanImageBufferPool * vk_pool, GstBuffer * buffer)
     GstVulkanCommandPool *cmd_pool;
     GstVulkanQueue *queue = NULL;
 
-    gst_vulkan_device_foreach_queue (vk_pool->device, _choose_queue, &queue);
+    queue =
+        gst_vulkan_device_select_queue (vk_pool->device,
+        VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT);
     if (!queue)
       return FALSE;
     cmd_pool = gst_vulkan_queue_create_command_pool (queue, &error);
@@ -446,7 +435,7 @@ gst_vulkan_image_buffer_pool_alloc (GstBufferPool * pool, GstBuffer ** buffer,
     /* .format = fill per image,  */
     /* .extent = fill per plane, */
     .mipLevels = 1,
-    .arrayLayers = 1,
+    .arrayLayers = priv->n_layers,
     .samples = VK_SAMPLE_COUNT_1_BIT,
     .tiling = tiling,
     .usage = priv->usage,

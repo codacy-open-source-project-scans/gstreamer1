@@ -2,7 +2,8 @@ d3d11_sources = [
   'gstd3d11bufferpool.cpp',
   'gstd3d11compile.cpp',
   'gstd3d11converter.cpp',
-  'gstd3d11converterbuilder.cpp',
+  'gstd3d11converter-builder.cpp',
+  'gstd3d11converter-helper.cpp',
   'gstd3d11device.cpp',
   'gstd3d11format.cpp',
   'gstd3d11memory.cpp',
@@ -25,8 +26,9 @@ d3d11_headers = [
 
 gstd3d11_dep = dependency('', required : false)
 directxmath_dep = dependency('', required : false)
+d3d11_opt = get_option('d3d11')
 
-if host_system != 'windows'
+if host_system != 'windows' or d3d11_opt.disabled()
   subdir_done()
 endif
 
@@ -44,10 +46,10 @@ have_dxgidebug_h = false
 d3d11_winapi_app = false
 d3d11_conf = configuration_data()
 
-d3d11_lib = cc.find_library('d3d11', required : false)
-dxgi_lib = cc.find_library('dxgi', required : false)
+d3d11_lib = cc.find_library('d3d11', required: d3d11_opt)
+dxgi_lib = cc.find_library('dxgi', required: d3d11_opt)
 d3dcompiler_lib = cc.find_library('d3dcompiler', required: false)
-runtimeobject_lib = cc.find_library('runtimeobject', required : false)
+runtimeobject_lib = cc.find_library('runtimeobject', required: false)
 
 if not d3d11_lib.found() or not dxgi_lib.found()
   subdir_done()
@@ -60,8 +62,8 @@ sdk_headers = [
 ]
 
 foreach h : sdk_headers
-  if not cc.has_header (h)
-    subdir_done ()
+  if not cc.has_header(h, required: d3d11_opt)
+    subdir_done()
   endif
 endforeach
 
@@ -90,6 +92,9 @@ if runtimeobject_lib.found() and d3dcompiler_lib.found()
 endif
 
 if not d3d11_winapi_desktop and not d3d11_winapi_app
+  if d3d11_opt.enabled()
+    error('Not building for win32 or winRT?')
+  endif
   subdir_done()
 endif
 
@@ -188,23 +193,18 @@ have_dx_math = cxx.compiles('''
       return 0;
     }
     ''',
-    name: 'DirectXMath suupport in Windows SDK')
+    name: 'DirectXMath support in Windows SDK')
 
 if not have_dx_math
   directxmath_dep = dependency('directxmath',
-      fallback: ['directxmath', 'directxmath_dep'],
-      required: false)
-  if not directxmath_dep.found()
-    subdir_done ()
-  endif
-
+      allow_fallback: true,
+      required: get_option('d3d11-math'))
   extra_deps += [directxmath_dep]
 endif
 
 # https://learn.microsoft.com/en-us/windows/win32/dxmath/pg-xnamath-internals#windows-sse-versus-sse2
 # x86 with Windows 7 or older may not support SSE2
 if host_machine.cpu_family() != 'x86'
-  # XXX: __cpuid() mismatch in case of some mingw toolchain
   have_dx_math_simd = cxx.compiles('''
       #include <windows.h>
       #include <DirectXMath.h>
@@ -214,10 +214,12 @@ if host_machine.cpu_family() != 'x86'
         return 0;
       }
       ''',
-      name: 'DirectXMath SIMD suupport',
+      name: 'DirectXMath SIMD support',
       dependencies: directxmath_dep)
   if have_dx_math_simd
     extra_comm_args += ['-DHAVE_DIRECTX_MATH_SIMD']
+  elif get_option('d3d11-math').enabled()
+    error('Usable DirectXMath not found')
   endif
 endif
 
