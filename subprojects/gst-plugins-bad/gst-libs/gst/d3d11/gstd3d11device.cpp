@@ -524,6 +524,8 @@ gst_d3d11_device_setup_format_table (GstD3D11Device * self)
       case GST_VIDEO_FORMAT_Y210:
       case GST_VIDEO_FORMAT_Y212_LE:
       case GST_VIDEO_FORMAT_Y412_LE:
+      case GST_VIDEO_FORMAT_BGRA64_LE:
+      case GST_VIDEO_FORMAT_BGR10A2_LE:
       {
         gboolean supported = TRUE;
 
@@ -573,6 +575,24 @@ gst_d3d11_device_setup_format_table (GstD3D11Device * self)
       case GST_VIDEO_FORMAT_Y444_16LE:
       case GST_VIDEO_FORMAT_AYUV:
       case GST_VIDEO_FORMAT_AYUV64:
+      case GST_VIDEO_FORMAT_UYVY:
+      case GST_VIDEO_FORMAT_VYUY:
+      case GST_VIDEO_FORMAT_YVYU:
+      case GST_VIDEO_FORMAT_ARGB:
+      case GST_VIDEO_FORMAT_xRGB:
+      case GST_VIDEO_FORMAT_ABGR:
+      case GST_VIDEO_FORMAT_xBGR:
+      case GST_VIDEO_FORMAT_RGB:
+      case GST_VIDEO_FORMAT_BGR:
+      case GST_VIDEO_FORMAT_v210:
+      case GST_VIDEO_FORMAT_v216:
+      case GST_VIDEO_FORMAT_v308:
+      case GST_VIDEO_FORMAT_IYU2:
+      case GST_VIDEO_FORMAT_RGB16:
+      case GST_VIDEO_FORMAT_BGR16:
+      case GST_VIDEO_FORMAT_RGB15:
+      case GST_VIDEO_FORMAT_BGR15:
+      case GST_VIDEO_FORMAT_r210:
         /* RGB planar formats */
       case GST_VIDEO_FORMAT_RGBP:
       case GST_VIDEO_FORMAT_BGRP:
@@ -625,61 +645,6 @@ gst_d3d11_device_setup_format_table (GstD3D11Device * self)
 
     priv->format_table[format.format] = format;
   }
-
-  /* FIXME: d3d11 sampler doesn't support packed-and-subsampled formats
-   * very well (and it's really poorly documented).
-   * As per observation, d3d11 samplers seems to be dropping the second
-   * Y componet from "Y0-U0-Y1-V0" pair which results in bad visual quality
-   * than 4:2:0 subsampled formats. We should revisit this later */
-
-  /* TODO: The best would be using d3d11 compute shader to handle this kinds of
-   * samples but comute shader is not implemented yet by us.
-   *
-   * Another simple approach is using d3d11 video processor,
-   * but capability will be very device dependent because it depends on
-   * GPU vendor's driver implementation, moreover, software fallback does
-   * not support d3d11 video processor. So it's not reliable in this case */
-#if 0
-  /* NOTE: packted yuv 4:2:2 YUY2, UYVY, and VYUY formats are not natively
-   * supported render target view formats
-   * (i.e., cannot be output format of shader pipeline) */
-  priv->format_table[n_formats].format = GST_VIDEO_FORMAT_YUY2;
-  if (can_support_format (self, DXGI_FORMAT_YUY2,
-          D3D11_FORMAT_SUPPORT_SHADER_SAMPLE)) {
-    priv->format_table[n_formats].resource_format[0] =
-        DXGI_FORMAT_R8G8B8A8_UNORM;
-    priv->format_table[n_formats].dxgi_format = DXGI_FORMAT_YUY2;
-  } else {
-    /* If DXGI_FORMAT_YUY2 format is not supported, use this format,
-     * it's analogous to YUY2 */
-    priv->format_table[n_formats].resource_format[0] =
-        DXGI_FORMAT_G8R8_G8B8_UNORM;
-  }
-  n_formats++;
-
-  /* No native DXGI format available for UYVY */
-  priv->format_table[n_formats].format = GST_VIDEO_FORMAT_UYVY;
-  priv->format_table[n_formats].resource_format[0] =
-      DXGI_FORMAT_R8G8_B8G8_UNORM;
-  n_formats++;
-
-  /* No native DXGI format available for VYUY */
-  priv->format_table[n_formats].format = GST_VIDEO_FORMAT_VYUY;
-  priv->format_table[n_formats].resource_format[0] =
-      DXGI_FORMAT_R8G8_B8G8_UNORM;
-  n_formats++;
-
-  /* Y210 and Y410 formats cannot support rtv */
-  priv->format_table[n_formats].format = GST_VIDEO_FORMAT_Y210;
-  priv->format_table[n_formats].resource_format[0] =
-      DXGI_FORMAT_R16G16B16A16_UNORM;
-  if (can_support_format (self, DXGI_FORMAT_Y210,
-          D3D11_FORMAT_SUPPORT_SHADER_SAMPLE))
-    priv->format_table[n_formats].dxgi_format = DXGI_FORMAT_Y210;
-  else
-    priv->format_table[n_formats].dxgi_format = DXGI_FORMAT_UNKNOWN;
-  n_formats++;
-#endif
 }
 
 static void
@@ -1000,9 +965,6 @@ gst_d3d11_device_new_internal (const GstD3D11DeviceConstructData * data)
     D3D_FEATURE_LEVEL_11_0,
     D3D_FEATURE_LEVEL_10_1,
     D3D_FEATURE_LEVEL_10_0,
-    D3D_FEATURE_LEVEL_9_3,
-    D3D_FEATURE_LEVEL_9_2,
-    D3D_FEATURE_LEVEL_9_1
   };
   D3D_FEATURE_LEVEL selected_level;
 
@@ -1040,6 +1002,12 @@ gst_d3d11_device_new_internal (const GstD3D11DeviceConstructData * data)
     hr = external_device->QueryInterface (IID_PPV_ARGS (&device));
     if (FAILED (hr)) {
       GST_WARNING ("Not a valid external ID3D11Device handle");
+      return nullptr;
+    }
+
+    selected_level = device->GetFeatureLevel ();
+    if (selected_level < D3D_FEATURE_LEVEL_10_0) {
+      GST_ERROR ("Feature level 0x%x is not supported", (guint) selected_level);
       return nullptr;
     }
 
@@ -1729,45 +1697,16 @@ gst_d3d11_device_get_pixel_shader_uncached (GstD3D11Device * device,
       "Creating pixel shader for token %" G_GINT64_FORMAT ", source:\n%s",
       token, source);
 
-  if (priv->feature_level >= D3D_FEATURE_LEVEL_11_0) {
-    if (bytecode && bytecode_size > 1) {
-      data = bytecode;
-      size = bytecode_size;
-      GST_DEBUG_OBJECT (device,
-          "Creating shader \"%s\" using precompiled bytecode", entry_point);
-    } else {
-      hr = gst_d3d11_shader_cache_get_pixel_shader_blob (token,
-          source, source_size, entry_point, defines, &blob);
-      if (!gst_d3d11_result (hr, device))
-        return hr;
-
-      data = blob->GetBufferPointer ();
-      size = blob->GetBufferSize ();
-    }
+  if (bytecode && bytecode_size > 1) {
+    data = bytecode;
+    size = bytecode_size;
+    GST_DEBUG_OBJECT (device,
+        "Creating shader \"%s\" using precompiled bytecode", entry_point);
   } else {
-    ComPtr < ID3DBlob > error_msg;
-    const gchar *target;
-    if (priv->feature_level >= D3D_FEATURE_LEVEL_10_0)
-      target = "ps_4_0";
-    else if (priv->feature_level >= D3D_FEATURE_LEVEL_9_3)
-      target = "ps_4_0_level_9_3";
-    else
-      target = "ps_4_0_level_9_1";
-
-    hr = gst_d3d11_compile (source, source_size, nullptr, defines,
-        nullptr, entry_point, target, 0, 0, &blob, &error_msg);
-    if (!gst_d3d11_result (hr, device)) {
-      const gchar *err = nullptr;
-
-      if (error_msg)
-        err = (const gchar *) error_msg->GetBufferPointer ();
-
-      GST_ERROR_OBJECT (device,
-          "Couldn't compile code, hr: 0x%x, error detail: %s, source code: \n%s",
-          (guint) hr, GST_STR_NULL (err), source);
-
+    hr = gst_d3d11_shader_cache_get_pixel_shader_blob (token,
+        source, source_size, entry_point, defines, &blob);
+    if (!gst_d3d11_result (hr, device))
       return hr;
-    }
 
     data = blob->GetBufferPointer ();
     size = blob->GetBufferSize ();
@@ -1831,6 +1770,9 @@ gst_d3d11_device_get_vertex_shader (GstD3D11Device * device, gint64 token,
   HRESULT hr;
   ComPtr < ID3D11VertexShader > shader;
   ComPtr < ID3D11InputLayout > input_layout;
+  ComPtr < ID3DBlob > blob;
+  const void *data;
+  gsize size;
 
   GST_DEBUG_OBJECT (device, "Getting vertext shader \"%s\" for token %"
       G_GINT64_FORMAT, entry_point, token);
@@ -1852,40 +1794,29 @@ gst_d3d11_device_get_vertex_shader (GstD3D11Device * device, gint64 token,
       "Creating vertex shader for token %" G_GINT64_FORMAT ", shader: \n%s",
       token, source);
 
-  if (priv->feature_level >= D3D_FEATURE_LEVEL_11_0) {
-    ComPtr < ID3DBlob > blob;
-    const void *data;
-    gsize size;
-
-    if (bytecode && bytecode_size > 1) {
-      data = bytecode;
-      size = bytecode_size;
-      GST_DEBUG_OBJECT (device,
-          "Creating shader \"%s\" using precompiled bytecode", entry_point);
-    } else {
-      hr = gst_d3d11_shader_cache_get_vertex_shader_blob (token,
-          source, source_size, entry_point, &blob);
-      if (!gst_d3d11_result (hr, device))
-        return hr;
-
-      data = blob->GetBufferPointer ();
-      size = blob->GetBufferSize ();
-    }
-
-    hr = priv->device->CreateVertexShader (data, size, nullptr, &shader);
-    if (!gst_d3d11_result (hr, device))
-      return hr;
-
-    hr = priv->device->CreateInputLayout (input_desc, desc_len, data,
-        size, &input_layout);
-    if (!gst_d3d11_result (hr, device))
-      return hr;
+  if (bytecode && bytecode_size > 1) {
+    data = bytecode;
+    size = bytecode_size;
+    GST_DEBUG_OBJECT (device,
+        "Creating shader \"%s\" using precompiled bytecode", entry_point);
   } else {
-    hr = gst_d3d11_create_vertex_shader_simple (device, source, entry_point,
-        input_desc, desc_len, &shader, &input_layout);
+    hr = gst_d3d11_shader_cache_get_vertex_shader_blob (token,
+        source, source_size, entry_point, &blob);
     if (!gst_d3d11_result (hr, device))
       return hr;
+
+    data = blob->GetBufferPointer ();
+    size = blob->GetBufferSize ();
   }
+
+  hr = priv->device->CreateVertexShader (data, size, nullptr, &shader);
+  if (!gst_d3d11_result (hr, device))
+    return hr;
+
+  hr = priv->device->CreateInputLayout (input_desc, desc_len, data,
+      size, &input_layout);
+  if (!gst_d3d11_result (hr, device))
+    return hr;
 
   GST_DEBUG_OBJECT (device, "Created vertex shader \"%s\" for token %"
       G_GINT64_FORMAT, entry_point, token);

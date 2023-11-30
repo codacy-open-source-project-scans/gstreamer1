@@ -155,6 +155,8 @@ gst_d3d11_dxgi_format_get_size (DXGI_FORMAT format, guint width, guint height,
     case DXGI_FORMAT_Y216:
     case DXGI_FORMAT_R16G16B16A16_UNORM:
     case DXGI_FORMAT_Y416:
+    case DXGI_FORMAT_R16_UINT:
+    case DXGI_FORMAT_R32_UINT:
       offset[0] = 0;
       stride[0] = pitch;
       *size = pitch * height;
@@ -278,31 +280,6 @@ gst_d3d11_dxgi_format_get_resource_format (DXGI_FORMAT format,
 
   resource_format[0] = format;
   return 1;
-}
-
-/**
- * gst_d3d11_dxgi_format_get_alignment:
- * @format: a DXGI_FORMAT
- *
- * Returns: Width and height Alignment requirement for given @format
- *
- * Since: 1.22
- */
-guint
-gst_d3d11_dxgi_format_get_alignment (DXGI_FORMAT format)
-{
-  switch (format) {
-    case DXGI_FORMAT_NV12:
-    case DXGI_FORMAT_P010:
-    case DXGI_FORMAT_P016:
-    case DXGI_FORMAT_Y210:
-    case DXGI_FORMAT_Y216:
-      return 2;
-    default:
-      break;
-  }
-
-  return 0;
 }
 
 /**

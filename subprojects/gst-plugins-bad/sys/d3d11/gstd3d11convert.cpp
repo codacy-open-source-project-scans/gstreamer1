@@ -1390,10 +1390,7 @@ gst_d3d11_base_convert_propose_allocation (GstBaseTransform * trans,
     d3d11_params = gst_d3d11_allocation_params_new (filter->device, &info,
         GST_D3D11_ALLOCATION_FLAG_DEFAULT, bind_flags, 0);
   } else {
-    /* Set bind flag */
-    for (i = 0; i < GST_VIDEO_INFO_N_PLANES (&info); i++) {
-      d3d11_params->desc[i].BindFlags |= bind_flags;
-    }
+    gst_d3d11_allocation_params_set_bind_flags (d3d11_params, bind_flags);
   }
 
   gst_buffer_pool_config_set_d3d11_allocation_params (config, d3d11_params);
@@ -1444,7 +1441,6 @@ gst_d3d11_base_convert_decide_allocation (GstBaseTransform * trans,
   GstD3D11AllocationParams *d3d11_params;
   gboolean update_pool = FALSE;
   GstVideoInfo info;
-  guint i;
   GstD3D11Format d3d11_format;
   guint bind_flags = 0;
   DXGI_FORMAT dxgi_format = DXGI_FORMAT_UNKNOWN;
@@ -1488,6 +1484,10 @@ gst_d3d11_base_convert_decide_allocation (GstBaseTransform * trans,
 
   if ((supported & D3D11_FORMAT_SUPPORT_RENDER_TARGET) != 0) {
     bind_flags |= D3D11_BIND_RENDER_TARGET;
+    if (d3d11_format.dxgi_format == DXGI_FORMAT_UNKNOWN &&
+        (supported & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW) != 0) {
+      bind_flags |= D3D11_BIND_UNORDERED_ACCESS;
+    }
   } else {
     if (d3d11_format.dxgi_format != DXGI_FORMAT_UNKNOWN &&
         (supported & D3D11_FORMAT_SUPPORT_VIDEO_PROCESSOR_OUTPUT) != 0) {
@@ -1529,10 +1529,7 @@ gst_d3d11_base_convert_decide_allocation (GstBaseTransform * trans,
     d3d11_params = gst_d3d11_allocation_params_new (filter->device, &info,
         GST_D3D11_ALLOCATION_FLAG_DEFAULT, bind_flags, 0);
   } else {
-    /* Set bind flag */
-    for (i = 0; i < GST_VIDEO_INFO_N_PLANES (&info); i++) {
-      d3d11_params->desc[i].BindFlags |= bind_flags;
-    }
+    gst_d3d11_allocation_params_set_bind_flags (d3d11_params, bind_flags);
   }
 
   gst_buffer_pool_config_set_d3d11_allocation_params (config, d3d11_params);
@@ -1625,10 +1622,15 @@ gst_d3d11_base_convert_setup_msaa_texture (GstD3D11BaseConvert * self,
     return;
   }
 
-  if (device_format.dxgi_format != DXGI_FORMAT_UNKNOWN)
+  if (device_format.dxgi_format == DXGI_FORMAT_UNKNOWN ||
+      (device_format.format_support[0] &
+          D3D11_FORMAT_SUPPORT_RENDER_TARGET) == 0) {
+    GST_DEBUG_OBJECT (self,
+        "MSAA supported only for native and RTV available formats");;
+    return;
+  } else {
     dxgi_format = device_format.dxgi_format;
-  else
-    dxgi_format = device_format.resource_format[0];
+  }
 
   device_handle = gst_d3d11_device_get_device_handle (device);
   while (sample_count > 1) {
@@ -1651,10 +1653,8 @@ gst_d3d11_base_convert_setup_msaa_texture (GstD3D11BaseConvert * self,
 
   params = gst_d3d11_allocation_params_new (device, info,
       GST_D3D11_ALLOCATION_FLAG_DEFAULT, D3D11_BIND_RENDER_TARGET, 0);
-  for (guint i = 0; i < GST_VIDEO_INFO_N_PLANES (info); i++) {
-    params->desc[i].SampleDesc.Count = sample_count;
-    params->desc[i].SampleDesc.Quality = quality_levels - 1;
-  }
+  gst_d3d11_allocation_params_set_sample_desc (params,
+      sample_count, quality_levels - 1);
 
   gst_buffer_pool_config_set_d3d11_allocation_params (config, params);
   gst_d3d11_allocation_params_free (params);
