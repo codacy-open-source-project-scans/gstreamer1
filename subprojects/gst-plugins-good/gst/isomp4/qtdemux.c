@@ -5373,7 +5373,12 @@ gst_qtdemux_seek_to_previous_keyframe (GstQTDemux * qtdemux)
     }
 
     /* Remember until where we want to go */
-    str->to_sample = str->from_sample - 1;
+    if (str->from_sample == 0) {
+      GST_LOG_OBJECT (qtdemux, "already at sample 0");
+      str->to_sample = 0;
+    } else {
+      str->to_sample = str->from_sample - 1;
+    }
     /* Define our time position */
     target_ts =
         str->samples[k_index].timestamp + str->samples[k_index].pts_offset;
@@ -8448,24 +8453,16 @@ gst_qtdemux_process_adapter (GstQTDemux * demux, gboolean force)
           keyframe = QTSAMPLE_KEYFRAME (stream, sample);
 
           /* check for segment end */
-          if (G_UNLIKELY (demux->segment.stop != -1
-                  && demux->segment.stop <= stream_pts && keyframe)
-              && !(demux->upstream_format_is_time && demux->segment.rate < 0)) {
+          if (G_UNLIKELY (stream->segment.stop != -1
+                  && stream->segment.stop <= stream_pts && keyframe)
+              && !(demux->upstream_format_is_time && stream->segment.rate < 0)) {
             GST_DEBUG_OBJECT (demux, "we reached the end of our segment.");
             stream->time_position = GST_CLOCK_TIME_NONE;        /* this means EOS */
 
             /* skip this data, stream is EOS */
             gst_adapter_flush (demux->adapter, demux->neededbytes);
-            demux->offset += demux->neededbytes;
 
-            /* check if all streams are eos */
             ret = GST_FLOW_EOS;
-            for (i = 0; i < QTDEMUX_N_STREAMS (demux); i++) {
-              if (!STREAM_IS_EOS (QTDEMUX_NTH_STREAM (demux, i))) {
-                ret = GST_FLOW_OK;
-                break;
-              }
-            }
           } else {
             GstBuffer *outbuf;
 
@@ -16185,7 +16182,7 @@ qtdemux_audio_caps (GstQTDemux * qtdemux, QtDemuxStream * stream,
   if (g_str_has_prefix (name, "audio/x-raw")) {
     stream->need_clip = TRUE;
     stream->min_buffer_size = 1024 * entry->bytes_per_frame;
-    stream->max_buffer_size = 4096 * entry->bytes_per_frame;
+    stream->max_buffer_size = entry->rate * entry->bytes_per_frame;
     GST_DEBUG ("setting min/max buffer sizes to %d/%d", stream->min_buffer_size,
         stream->max_buffer_size);
   }

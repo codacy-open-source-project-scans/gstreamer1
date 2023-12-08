@@ -42,6 +42,8 @@
 #include <unistd.h>
 #endif
 
+#include <stdio.h>              /* sscanf */
+
 #include "gstvasurfacecopy.h"
 #include "gstvavideoformat.h"
 #include "vasurfaceimage.h"
@@ -586,10 +588,13 @@ _va_create_surface_and_export_to_dmabuf (GstVaDisplay * display,
   if (GST_VIDEO_INFO_N_PLANES (info) != desc.num_layers)
     goto failed;
 
+  /* YUY2 and YUYV are the same. radeonsi returns always YUYV.
+   * There's no reason to fail if the different fourcc if there're dups.
+   * https://fourcc.org/pixel-format/yuv-yuy2/ */
   if (fourcc != desc.fourcc) {
-    GST_ERROR ("Unsupported fourcc: %" GST_FOURCC_FORMAT,
+    GST_INFO ("Different fourcc: requested %" GST_FOURCC_FORMAT " - returned %"
+        GST_FOURCC_FORMAT, GST_FOURCC_ARGS (fourcc),
         GST_FOURCC_ARGS (desc.fourcc));
-    goto failed;
   }
 
   if (desc.num_objects == 0) {
@@ -1301,7 +1306,7 @@ _clean_mem (GstVaMemory * mem)
   mem->image.image_id = VA_INVALID_ID;
   mem->image.buf = VA_INVALID_ID;
 
-  mem->is_derived = TRUE;
+  mem->is_derived = FALSE;
   mem->is_dirty = FALSE;
   mem->prev_mapflags = 0;
   mem->mapped_data = NULL;
@@ -1316,6 +1321,50 @@ _reset_mem (GstVaMemory * mem, GstAllocator * allocator, gsize size)
 
   gst_memory_init (GST_MEMORY_CAST (mem), 0, allocator, NULL, size,
       0 /* align */ , 0 /* offset */ , size);
+}
+
+/*
+ * HACK:
+ *
+ * This method should be defined as a public method of GstVaDisplay. But in
+ * order to backport this fix, it's kept locally.
+ */
+static gboolean
+_gst_va_display_get_vendor_version (GstVaDisplay * display, guint * major,
+    guint * minor)
+{
+  VADisplay dpy;
+  guint maj, min;
+  const char *vendor;
+
+  dpy = gst_va_display_get_va_dpy (display);
+  vendor = vaQueryVendorString (dpy);
+  if (vendor && sscanf (vendor, "Mesa Gallium driver %d.%d.", &maj, &min) == 2) {
+    *major = maj;
+    *minor = min;
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
+static gboolean
+_is_old_mesa (GstVaAllocator * va_allocator)
+{
+  guint major, minor;
+
+  if (!GST_VA_DISPLAY_IS_IMPLEMENTATION (va_allocator->display, MESA_GALLIUM))
+    return FALSE;
+  if (!_gst_va_display_get_vendor_version (va_allocator->display, &major,
+          &minor)) {
+    GST_WARNING ("Could not parse version from Mesa vendor string");
+    return FALSE;
+  }
+  if (major > 23)
+    return FALSE;
+  if (major == 23 && minor > 2)
+    return FALSE;
+  return TRUE;
 }
 
 static inline void
@@ -1361,6 +1410,18 @@ _update_image_info (GstVaAllocator * va_allocator)
     va_allocator->feat_use_derived = GST_VA_FEATURE_DISABLED;
   }
   va_allocator->use_derived = FALSE;
+#else
+  /* XXX: Derived in Mesa <23.3 can't use derived images for P010 format
+   * https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/24381
+   */
+  if (va_allocator->img_format == GST_VIDEO_FORMAT_P010_10LE
+      && _is_old_mesa (va_allocator)) {
+    if (va_allocator->feat_use_derived != GST_VA_FEATURE_DISABLED) {
+      GST_INFO_OBJECT (va_allocator, "Disable image derive on old Mesa.");
+      va_allocator->feat_use_derived = GST_VA_FEATURE_DISABLED;
+    }
+    va_allocator->use_derived = FALSE;
+  }
 #endif
   /* Try derived first, but different formats can never derive */
   if (va_allocator->feat_use_derived != GST_VA_FEATURE_DISABLED
@@ -1403,10 +1464,8 @@ static gpointer
 _va_map_unlocked (GstVaMemory * mem, GstMapFlags flags)
 {
   GstAllocator *allocator = GST_MEMORY_CAST (mem)->allocator;
-  GstVideoInfo *info;
   GstVaAllocator *va_allocator;
   GstVaDisplay *display;
-  gboolean use_derived;
 
   g_return_val_if_fail (mem->surface != VA_INVALID_ID, NULL);
   g_return_val_if_fail (GST_IS_VA_ALLOCATOR (allocator), NULL);
@@ -1432,35 +1491,11 @@ _va_map_unlocked (GstVaMemory * mem, GstMapFlags flags)
     goto success;
   }
 
-  if (va_allocator->feat_use_derived == GST_VA_FEATURE_AUTO) {
-    switch (gst_va_display_get_implementation (display)) {
-      case GST_VA_IMPLEMENTATION_INTEL_I965:
-        /* YUV derived images are tiled, so writing them is also
-         * problematic */
-        use_derived = va_allocator->use_derived && !((flags & GST_MAP_READ)
-            || ((flags & GST_MAP_WRITE)
-                && GST_VIDEO_INFO_IS_YUV (&va_allocator->info)));
-        break;
-      case GST_VA_IMPLEMENTATION_MESA_GALLIUM:
-        /* Reading RGB derived images, with non-standard resolutions,
-         * looks like tiled too. TODO(victor): fill a bug in Mesa. */
-        use_derived = va_allocator->use_derived && !((flags & GST_MAP_READ)
-            && GST_VIDEO_INFO_IS_RGB (&va_allocator->info));
-        break;
-      default:
-        use_derived = va_allocator->use_derived;
-        break;
-    }
-  } else {
-    use_derived = va_allocator->use_derived;
-  }
+  mem->is_derived = va_allocator->use_derived;
 
-  info = &va_allocator->info;
-
-  if (!va_ensure_image (display, mem->surface, info, &mem->image, use_derived))
+  if (!va_ensure_image (display, mem->surface, &va_allocator->info, &mem->image,
+          va_allocator->use_derived))
     return NULL;
-
-  mem->is_derived = use_derived;
 
   if (!mem->is_derived) {
     if (!va_get_image (display, mem->surface, &mem->image))
