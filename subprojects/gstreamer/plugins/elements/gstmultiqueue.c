@@ -2394,11 +2394,9 @@ next:
     /* pretend we have not seen EOS yet for upstream's sake */
     result = sq->srcresult;
   } else if (dropping && gst_data_queue_is_empty (sq->queue)) {
-    /* queue empty, so stop dropping
-     * we can commit the result we have now,
+    /* queue empty. we can commit the result we have now,
      * which is either OK after a segment, or EOS */
     GST_DEBUG_ID (sq->debug_id, "committed EOS drop");
-    dropping = FALSE;
     result = GST_FLOW_EOS;
   }
   sq->srcresult = result;
@@ -2635,6 +2633,7 @@ gst_multi_queue_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
   GstEventType type;
   GstEvent *sref = NULL;
   GstPad *srcpad;
+  gboolean is_timed_event = FALSE;
 
 
   sq = GST_MULTIQUEUE_PAD (pad)->sq;
@@ -2719,6 +2718,7 @@ gst_multi_queue_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
           GST_MULTI_QUEUE_MUTEX_UNLOCK (mq);
         }
       }
+      is_timed_event = TRUE;
       break;
 
     default:
@@ -2742,8 +2742,13 @@ gst_multi_queue_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
       "Enqueuing event %p of type %s with id %d",
       event, GST_EVENT_TYPE_NAME (event), curid);
 
-  if (!gst_data_queue_push (sq->queue, (GstDataQueueItem *) item))
-    goto flushing;
+  if (is_timed_event) {
+    if (!gst_data_queue_push (sq->queue, (GstDataQueueItem *) item))
+      goto flushing;
+  } else {
+    if (!gst_data_queue_push_force (sq->queue, (GstDataQueueItem *) item))
+      goto flushing;
+  }
 
   /* mark EOS when we received one, we must do that after putting the
    * buffer in the queue because EOS marks the buffer as filled. */

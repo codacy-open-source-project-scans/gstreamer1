@@ -21,7 +21,9 @@
 #include "config.h"
 #endif
 
+#include <directx/d3dx12.h>
 #include "gstd3d12memory.h"
+#include "gstd3d12memory-private.h"
 #include "gstd3d12device.h"
 #include "gstd3d12utils.h"
 #include "gstd3d12format.h"
@@ -96,22 +98,9 @@ gst_d3d12_allocation_params_new (GstD3D12Device * device,
   ret->info = *info;
   ret->aligned_info = *info;
   ret->d3d12_format = d3d12_format;
-
-  if (d3d12_format.dxgi_format == DXGI_FORMAT_UNKNOWN) {
-    for (guint i = 0; i < GST_VIDEO_INFO_N_PLANES (info); i++) {
-      g_assert (d3d12_format.resource_format[i] != DXGI_FORMAT_UNKNOWN);
-
-      ret->desc[i] =
-          CD3D12_RESOURCE_DESC::Tex2D (d3d12_format.resource_format[i],
-          GST_VIDEO_INFO_COMP_WIDTH (info, i),
-          GST_VIDEO_INFO_COMP_HEIGHT (info, i), resource_flags);
-    }
-  } else {
-    ret->desc[0] = CD3D12_RESOURCE_DESC::Tex2D (d3d12_format.dxgi_format,
-        info->width, info->height, resource_flags);
-  }
-
+  ret->array_size = 1;
   ret->flags = flags;
+  ret->resource_flags = resource_flags;
 
   return ret;
 }
@@ -161,13 +150,33 @@ gst_d3d12_allocation_params_alignment (GstD3D12AllocationParams * params,
 
   params->aligned_info = new_info;
 
-  for (guint i = 0; i < GST_VIDEO_INFO_N_PLANES (info); i++) {
-    params->desc[i].Width = GST_VIDEO_INFO_COMP_WIDTH (&new_info, i);
-    params->desc[i].Height = GST_VIDEO_INFO_COMP_HEIGHT (&new_info, i);
-  }
+  return TRUE;
+}
+
+gboolean
+gst_d3d12_allocation_params_set_resource_flags (GstD3D12AllocationParams *
+    params, D3D12_RESOURCE_FLAGS resource_flags)
+{
+  g_return_val_if_fail (params, FALSE);
+
+  params->resource_flags |= resource_flags;
 
   return TRUE;
 }
+
+gboolean
+gst_d3d12_allocation_params_set_array_size (GstD3D12AllocationParams * params,
+    guint size)
+{
+  g_return_val_if_fail (params, FALSE);
+  g_return_val_if_fail (size > 0, FALSE);
+  g_return_val_if_fail (size <= G_MAXUINT16, FALSE);
+
+  params->array_size = size;
+
+  return TRUE;
+}
+
 
 /* *INDENT-OFF* */
 struct _GstD3D12MemoryPrivate
@@ -221,8 +230,8 @@ gst_d3d12_memory_ensure_staging_resource (GstD3D12Memory * dmem)
   HRESULT hr;
   ID3D12Device *device = gst_d3d12_device_get_device_handle (dmem->device);
   D3D12_HEAP_PROPERTIES prop =
-      CD3D12_HEAP_PROPERTIES (D3D12_HEAP_TYPE_READBACK);
-  D3D12_RESOURCE_DESC desc = CD3D12_RESOURCE_DESC::Buffer (priv->size);
+      CD3DX12_HEAP_PROPERTIES (D3D12_HEAP_TYPE_READBACK);
+  D3D12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer (priv->size);
   ComPtr < ID3D12Resource > staging;
 
   hr = device->CreateCommittedResource (&prop, D3D12_HEAP_FLAG_NONE,
@@ -293,10 +302,10 @@ gst_d3d12_memory_download (GstD3D12Memory * dmem)
 
   for (guint i = 0; i < priv->num_subresources; i++) {
     D3D12_TEXTURE_COPY_LOCATION src =
-        CD3D12_TEXTURE_COPY_LOCATION (priv->resource.Get (),
+        CD3DX12_TEXTURE_COPY_LOCATION (priv->resource.Get (),
         priv->subresource_index[i]);
     D3D12_TEXTURE_COPY_LOCATION dst =
-        CD3D12_TEXTURE_COPY_LOCATION (priv->staging.Get (), priv->layout[i]);
+        CD3DX12_TEXTURE_COPY_LOCATION (priv->staging.Get (), priv->layout[i]);
 
     priv->copy_cl->CopyTextureRegion (&dst, 0, 0, 0, &src, nullptr);
   }
@@ -347,9 +356,9 @@ gst_d3d12_memory_upload (GstD3D12Memory * dmem)
 
   for (guint i = 0; i < priv->num_subresources; i++) {
     D3D12_TEXTURE_COPY_LOCATION src =
-        CD3D12_TEXTURE_COPY_LOCATION (priv->staging.Get (), priv->layout[i]);
+        CD3DX12_TEXTURE_COPY_LOCATION (priv->staging.Get (), priv->layout[i]);
     D3D12_TEXTURE_COPY_LOCATION dst =
-        CD3D12_TEXTURE_COPY_LOCATION (priv->resource.Get (),
+        CD3DX12_TEXTURE_COPY_LOCATION (priv->resource.Get (),
         priv->subresource_index[i]);
 
     priv->copy_cl->CopyTextureRegion (&dst, 0, 0, 0, &src, nullptr);
@@ -876,7 +885,7 @@ gst_d3d12_allocator_alloc_wrapped (GstD3D12Allocator * self,
   GstD3D12MemoryPrivate *priv;
   ID3D12Device *device_handle = gst_d3d12_device_get_device_handle (device);
   guint8 num_subresources =
-      gst_d3d12_get_format_plane_count (device, desc->Format);
+      D3D12GetFormatPlaneCount (device_handle, desc->Format);
 
   if (num_subresources == 0) {
     GST_ERROR_OBJECT (self, "Couldn't get format info");
@@ -912,7 +921,7 @@ gst_d3d12_allocator_alloc_wrapped (GstD3D12Allocator * self,
      * | UV plane: 3 | UV plane: 4 | UV plane: 5 |
      * +-------------+-------------+-------------+
      */
-    mem->priv->subresource_index[i] = gst_d3d12_calculate_subresource (0,
+    mem->priv->subresource_index[i] = D3D12CalcSubresource (0,
         array_slice, i, 1, desc->DepthOrArraySize);
 
     device_handle->GetCopyableFootprints (&priv->desc,
