@@ -1005,11 +1005,14 @@ gst_validate_print_action (GstValidateAction * action, const gchar * message)
   if (message == NULL) {
     gint indent = (gst_validate_action_get_level (action) * 2);
     PrintActionFieldData d = { NULL, indent, 0 };
+    GstValidateScenario *scenario = gst_validate_action_get_scenario (action);
     d.str = string = g_string_new (NULL);
 
-    g_string_append_printf (string, "`%s` at %s:%d", action->type,
+    g_string_append_printf (string, "`%s` at %s:%d(%s)", action->type,
         GST_VALIDATE_ACTION_FILENAME (action),
-        GST_VALIDATE_ACTION_LINENO (action));
+        GST_VALIDATE_ACTION_LINENO (action),
+        scenario ? GST_OBJECT_NAME (scenario) : "no scenario");
+    gst_object_unref (scenario);
 
     if (GST_VALIDATE_ACTION_N_REPEATS (action))
       g_string_append_printf (string, " [%s=%d/%d]",
@@ -1038,7 +1041,7 @@ print_action_parameter (GString * string, GstValidateActionType * type,
     GstValidateActionParameter * param)
 {
   gchar *desc;
-  g_string_append_printf (string, "\n\n* `%s`:(%s): ", param->name,
+  g_string_append_printf (string, "\n\n#### `%s` (_%s_)\n\n", param->name,
       param->mandatory ? "mandatory" : "optional");
 
   if (g_strcmp0 (param->description, "")) {
@@ -1054,16 +1057,18 @@ print_action_parameter (GString * string, GstValidateActionType * type,
     desc =
         g_regex_replace (newline_regex,
         param->possible_variables, -1, 0, "\n\n  * ", 0, NULL);
-    g_string_append_printf (string, "\n\n  Possible variables:\n\n  * %s",
+    g_string_append_printf (string, "\n\n**Possible variables**:\n\n  * %s",
         desc);
   }
 
   if (param->types)
-    g_string_append_printf (string, "\n\n  Possible types: `%s`", param->types);
+    g_string_append_printf (string, "\n\n**Possible types**: `%s`",
+        param->types);
 
   if (!param->mandatory)
-    g_string_append_printf (string, "\n\n  Default: %s", param->def);
+    g_string_append_printf (string, "\n\n**Default**: %s", param->def);
 
+  g_string_append (string, "\n\n---");
 }
 
 static void
@@ -1177,7 +1182,7 @@ gst_validate_printf_valist (gpointer source, const gchar * format, va_list args)
 
       g_string_append_printf (string, "\n%s", type->description);
       g_string_append_printf (string,
-          "\n * Implementer namespace: %s", type->implementer_namespace);
+          "\n\n**Implementer namespace**: %s", type->implementer_namespace);
 
       if (IS_CONFIG_ACTION_TYPE (type->flags))
         g_string_append_printf (string,

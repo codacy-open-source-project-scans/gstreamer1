@@ -35,9 +35,6 @@ typedef struct _GstD3D12Device GstD3D12Device;
 typedef struct _GstD3D12DeviceClass GstD3D12DeviceClass;
 typedef struct _GstD3D12DevicePrivate GstD3D12DevicePrivate;
 
-typedef struct _GstD3D12Fence GstD3D12Fence;
-typedef struct _GstD3D12FencePrivate GstD3D12FencePrivate;
-
 typedef struct _GstD3D12Memory GstD3D12Memory;
 typedef struct _GstD3D12MemoryPrivate GstD3D12MemoryPrivate;
 
@@ -56,6 +53,10 @@ typedef struct _GstD3D12AllocationParams GstD3D12AllocationParams;
 typedef struct _GstD3D12BufferPool GstD3D12BufferPool;
 typedef struct _GstD3D12BufferPoolClass GstD3D12BufferPoolClass;
 typedef struct _GstD3D12BufferPoolPrivate GstD3D12BufferPoolPrivate;
+
+typedef struct _GstD3D12Converter GstD3D12Converter;
+typedef struct _GstD3D12ConverterClass GstD3D12ConverterClass;
+typedef struct _GstD3D12ConverterPrivate GstD3D12ConverterPrivate;
 
 G_END_DECLS
 

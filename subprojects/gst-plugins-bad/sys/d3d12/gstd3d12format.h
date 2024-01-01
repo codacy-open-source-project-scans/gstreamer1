@@ -25,18 +25,6 @@
 
 G_BEGIN_DECLS
 
-#define GST_D3D12_COMMON_FORMATS \
-    "NV12, P010_10LE, P016_LE "
-
-#define GST_D3D12_SINK_FORMATS \
-    "{ " GST_D3D12_COMMON_FORMATS " }"
-
-#define GST_D3D12_SRC_FORMATS \
-    "{ " GST_D3D12_COMMON_FORMATS " }"
-
-#define GST_D3D12_ALL_FORMATS \
-    "{ " GST_D3D12_COMMON_FORMATS " }"
-
 struct _GstD3D12Format
 {
   GstVideoFormat format;
@@ -60,10 +48,39 @@ struct _GstD3D12Format
   guint padding[GST_PADDING_LARGE];
 };
 
+typedef struct _GstD3D12ColorMatrix
+{
+  gdouble matrix[3][3];
+  gdouble offset[3];
+  gdouble min[3];
+  gdouble max[3];
+} GstD3D12ColorMatrix;
+
 GstVideoFormat  gst_d3d12_dxgi_format_to_gst        (DXGI_FORMAT format);
 
 gboolean        gst_d3d12_dxgi_format_to_resource_formats (DXGI_FORMAT format,
                                                            DXGI_FORMAT resource_format[GST_VIDEO_MAX_PLANES]);
+
+void            gst_d3d12_color_matrix_init (GstD3D12ColorMatrix * matrix);
+
+gchar *         gst_d3d12_dump_color_matrix (GstD3D12ColorMatrix * matrix);
+
+gboolean        gst_d3d12_color_range_adjust_matrix_unorm (const GstVideoInfo * in_info,
+                                                           const GstVideoInfo * out_info,
+                                                           GstD3D12ColorMatrix * matrix);
+
+gboolean        gst_d3d12_yuv_to_rgb_matrix_unorm (const GstVideoInfo * in_yuv_info,
+                                                   const GstVideoInfo * out_rgb_info,
+                                                   GstD3D12ColorMatrix * matrix);
+
+gboolean        gst_d3d12_rgb_to_yuv_matrix_unorm (const GstVideoInfo * in_rgb_info,
+                                                   const GstVideoInfo * out_yuv_info,
+                                                   GstD3D12ColorMatrix * matrix);
+
+gboolean        gst_d3d12_color_primaries_matrix_unorm (const GstVideoColorPrimariesInfo * in_info,
+                                                        const GstVideoColorPrimariesInfo * out_info,
+                                                        GstD3D12ColorMatrix * matrix);
+
 
 G_END_DECLS
 

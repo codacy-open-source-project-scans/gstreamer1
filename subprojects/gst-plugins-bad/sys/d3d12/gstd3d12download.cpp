@@ -22,8 +22,7 @@
 #endif
 
 #include "gstd3d12download.h"
-#include "gstd3d12bufferpool.h"
-#include "gstd3d12format.h"
+#include "gstd3d12pluginutils.h"
 
 GST_DEBUG_CATEGORY_STATIC (gst_d3d12_download_debug);
 #define GST_CAT_DEFAULT gst_d3d12_download_debug
