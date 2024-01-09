@@ -75,6 +75,12 @@ GST_DEFINE_MINI_OBJECT_TYPE (GstD3D12OverlayRect, gst_d3d12_overlay_rect);
 
 struct GstD3D12OverlayCompositorPrivate
 {
+  GstD3D12OverlayCompositorPrivate ()
+  {
+    sample_desc.Count = 1;
+    sample_desc.Quality = 0;
+  }
+
   ~GstD3D12OverlayCompositorPrivate ()
   {
     if (overlays)
@@ -88,6 +94,11 @@ struct GstD3D12OverlayCompositorPrivate
 
   D3D12_VIEWPORT viewport;
   D3D12_RECT scissor_rect;
+
+  D3D12_INPUT_ELEMENT_DESC input_desc[2];
+  D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = { };
+  D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_premul_desc = { };
+  DXGI_SAMPLE_DESC sample_desc;
 
   ComPtr<ID3D12RootSignature> rs;
   ComPtr<ID3D12PipelineState> pso;
@@ -203,7 +214,8 @@ gst_d3d12_overlay_rect_new (GstD3D12OverlayCompositor * self,
       vmeta->height, 1, 1);
 
   ComPtr < ID3D12Resource > texture;
-  auto hr = device->CreateCommittedResource (&heap_prop, D3D12_HEAP_FLAG_NONE,
+  auto hr = device->CreateCommittedResource (&heap_prop,
+      D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
       &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS (&texture));
   if (!gst_d3d12_result (hr, self->device)) {
     GST_ERROR_OBJECT (self, "Couldn't create texture");
@@ -218,7 +230,8 @@ gst_d3d12_overlay_rect_new (GstD3D12OverlayCompositor * self,
   ComPtr < ID3D12Resource > staging;
   heap_prop = CD3DX12_HEAP_PROPERTIES (D3D12_HEAP_TYPE_UPLOAD);
   desc = CD3DX12_RESOURCE_DESC::Buffer (size);
-  hr = device->CreateCommittedResource (&heap_prop, D3D12_HEAP_FLAG_NONE,
+  hr = device->CreateCommittedResource (&heap_prop,
+      D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
       &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
       IID_PPV_ARGS (&staging));
   if (!gst_d3d12_result (hr, self->device)) {
@@ -303,7 +316,8 @@ gst_d3d12_overlay_rect_new (GstD3D12OverlayCompositor * self,
   ComPtr < ID3D12Resource > vertex_buf;
   heap_prop = CD3DX12_HEAP_PROPERTIES (D3D12_HEAP_TYPE_UPLOAD);
   desc = CD3DX12_RESOURCE_DESC::Buffer (sizeof (VertexData) * 4);
-  hr = device->CreateCommittedResource (&heap_prop, D3D12_HEAP_FLAG_NONE,
+  hr = device->CreateCommittedResource (&heap_prop,
+      D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
       &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
       IID_PPV_ARGS (&vertex_buf));
   if (!gst_d3d12_result (hr, self->device)) {
@@ -421,24 +435,25 @@ gst_d3d12_overlay_compositor_setup_shader (GstD3D12OverlayCompositor * self)
   device->CreateRootSignature (0, rs_blob->GetBufferPointer (),
       rs_blob->GetBufferSize (), IID_PPV_ARGS (&rs));
 
-  D3D12_INPUT_ELEMENT_DESC input_desc[2];
-  input_desc[0].SemanticName = "POSITION";
-  input_desc[0].SemanticIndex = 0;
-  input_desc[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
-  input_desc[0].InputSlot = 0;
-  input_desc[0].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
-  input_desc[0].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-  input_desc[0].InstanceDataStepRate = 0;
+  priv->input_desc[0].SemanticName = "POSITION";
+  priv->input_desc[0].SemanticIndex = 0;
+  priv->input_desc[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
+  priv->input_desc[0].InputSlot = 0;
+  priv->input_desc[0].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+  priv->input_desc[0].InputSlotClass =
+      D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+  priv->input_desc[0].InstanceDataStepRate = 0;
 
-  input_desc[1].SemanticName = "TEXCOORD";
-  input_desc[1].SemanticIndex = 0;
-  input_desc[1].Format = DXGI_FORMAT_R32G32_FLOAT;
-  input_desc[1].InputSlot = 0;
-  input_desc[1].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
-  input_desc[1].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-  input_desc[1].InstanceDataStepRate = 0;
+  priv->input_desc[1].SemanticName = "TEXCOORD";
+  priv->input_desc[1].SemanticIndex = 0;
+  priv->input_desc[1].Format = DXGI_FORMAT_R32G32_FLOAT;
+  priv->input_desc[1].InputSlot = 0;
+  priv->input_desc[1].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+  priv->input_desc[1].InputSlotClass =
+      D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+  priv->input_desc[1].InstanceDataStepRate = 0;
 
-  D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = { };
+  auto & pso_desc = priv->pso_desc;
   pso_desc.pRootSignature = rs.Get ();
   pso_desc.VS.BytecodeLength = sizeof (g_VSMain_coord);
   pso_desc.VS.pShaderBytecode = g_VSMain_coord;
@@ -462,8 +477,8 @@ gst_d3d12_overlay_compositor_setup_shader (GstD3D12OverlayCompositor * self)
   pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
   pso_desc.DepthStencilState.DepthEnable = FALSE;
   pso_desc.DepthStencilState.StencilEnable = FALSE;
-  pso_desc.InputLayout.pInputElementDescs = input_desc;
-  pso_desc.InputLayout.NumElements = G_N_ELEMENTS (input_desc);
+  pso_desc.InputLayout.pInputElementDescs = priv->input_desc;
+  pso_desc.InputLayout.NumElements = 2;
   pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
   pso_desc.NumRenderTargets = 1;
   pso_desc.RTVFormats[0] = device_format.resource_format[0];
@@ -477,9 +492,11 @@ gst_d3d12_overlay_compositor_setup_shader (GstD3D12OverlayCompositor * self)
   }
 
   ComPtr < ID3D12PipelineState > pso_premul;
-  pso_desc.PS.BytecodeLength = sizeof (g_PSMain_sample_premul);
-  pso_desc.PS.pShaderBytecode = g_PSMain_sample_premul;
-  hr = device->CreateGraphicsPipelineState (&pso_desc,
+  auto & pso_premul_desc = priv->pso_premul_desc;
+  pso_premul_desc = priv->pso_desc;
+  pso_premul_desc.PS.BytecodeLength = sizeof (g_PSMain_sample_premul);
+  pso_premul_desc.PS.pShaderBytecode = g_PSMain_sample_premul;
+  hr = device->CreateGraphicsPipelineState (&pso_premul_desc,
       IID_PPV_ARGS (&pso_premul));
   if (!gst_d3d12_result (hr, self->device)) {
     GST_ERROR_OBJECT (self, "Couldn't create pso");
@@ -491,7 +508,8 @@ gst_d3d12_overlay_compositor_setup_shader (GstD3D12OverlayCompositor * self)
   D3D12_RESOURCE_DESC buffer_desc =
       CD3DX12_RESOURCE_DESC::Buffer (sizeof (indices));
   ComPtr < ID3D12Resource > index_buf;
-  hr = device->CreateCommittedResource (&heap_prop, D3D12_HEAP_FLAG_NONE,
+  hr = device->CreateCommittedResource (&heap_prop,
+      D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
       &buffer_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
       IID_PPV_ARGS (&index_buf));
   if (!gst_d3d12_result (hr, self->device)) {
@@ -674,6 +692,13 @@ gst_d3d12_overlay_compositor_update_viewport (GstD3D12OverlayCompositor *
   return TRUE;
 }
 
+static void
+pso_free_func (ID3D12PipelineState * pso)
+{
+  if (pso)
+    pso->Release ();
+}
+
 static gboolean
 gst_d3d12_overlay_compositor_execute (GstD3D12OverlayCompositor * self,
     GstBuffer * buf, GstD3D12FenceData * fence_data,
@@ -746,6 +771,14 @@ gst_d3d12_overlay_compositor_execute (GstD3D12OverlayCompositor * self,
     prev_pso = pso;
   }
 
+  priv->pso->AddRef ();
+  gst_d3d12_fence_data_add_notify (fence_data, priv->pso.Get (),
+      (GDestroyNotify) pso_free_func);
+
+  priv->pso_premul->AddRef ();
+  gst_d3d12_fence_data_add_notify (fence_data, priv->pso_premul.Get (),
+      (GDestroyNotify) pso_free_func);
+
   return TRUE;
 }
 
@@ -763,6 +796,41 @@ gst_d3d12_overlay_compositor_draw (GstD3D12OverlayCompositor * compositor,
 
   if (!priv->overlays)
     return TRUE;
+
+  auto mem = (GstD3D12Memory *) gst_buffer_peek_memory (buf, 0);
+  auto resource = gst_d3d12_memory_get_resource_handle (mem);
+  auto desc = resource->GetDesc ();
+  if (desc.SampleDesc.Count != priv->sample_desc.Count ||
+      desc.SampleDesc.Quality != priv->sample_desc.Quality) {
+    auto device = gst_d3d12_device_get_device_handle (compositor->device);
+
+    auto pso_desc = priv->pso_desc;
+    pso_desc.SampleDesc = desc.SampleDesc;
+    ComPtr < ID3D12PipelineState > pso;
+    auto hr = device->CreateGraphicsPipelineState (&pso_desc,
+        IID_PPV_ARGS (&pso));
+    if (!gst_d3d12_result (hr, compositor->device)) {
+      GST_ERROR_OBJECT (compositor, "Couldn't create pso");
+      return FALSE;
+    }
+
+    ComPtr < ID3D12PipelineState > pso_premul;
+    auto pso_premul_desc = priv->pso_premul_desc;
+    pso_premul_desc.SampleDesc = desc.SampleDesc;
+    hr = device->CreateGraphicsPipelineState (&pso_premul_desc,
+        IID_PPV_ARGS (&pso_premul));
+    if (!gst_d3d12_result (hr, compositor->device)) {
+      GST_ERROR_OBJECT (compositor, "Couldn't create pso");
+      return FALSE;
+    }
+
+    priv->pso = nullptr;
+    priv->pso_premul = nullptr;
+
+    priv->pso = pso;
+    priv->pso_premul = pso_premul;
+    priv->sample_desc = desc.SampleDesc;
+  }
 
   return gst_d3d12_overlay_compositor_execute (compositor,
       buf, fence_data, command_list);

@@ -203,6 +203,8 @@ enum
 /* *INDENT-OFF* */
 struct QuadData
 {
+  D3D12_INPUT_ELEMENT_DESC input_desc[2];
+  D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = { };
   ComPtr<ID3D12PipelineState> pso;
   guint num_rtv;
 };
@@ -231,10 +233,20 @@ struct _GstD3D12ConverterPrivate
   {
     transform = g_matrix_identity;
     custom_transform = g_matrix_identity;
+    blend_desc = CD3DX12_BLEND_DESC (D3D12_DEFAULT);
+    for (guint i = 0; i < 4; i++)
+      blend_factor[i] = 1.0f;
+
+    sample_desc.Count = 1;
+    sample_desc.Quality = 0;
   }
 
   ~_GstD3D12ConverterPrivate ()
   {
+    if (fallback_pool) {
+      gst_buffer_pool_set_active (fallback_pool, FALSE);
+      gst_clear_object (&fallback_pool);
+    }
     converter_upload_data_free (upload_data);
     gst_clear_object (&srv_heap_pool);
   }
@@ -251,6 +263,12 @@ struct _GstD3D12ConverterPrivate
   D3D12_RECT scissor_rect[GST_VIDEO_MAX_PLANES];
 
   D3D12_BLEND_DESC blend_desc;
+  FLOAT blend_factor[4];
+  DXGI_SAMPLE_DESC sample_desc;
+  gboolean update_pso = FALSE;
+
+  GstVideoInfo fallback_pool_info;
+  GstBufferPool *fallback_pool = nullptr;
 
   ConverterRootSignaturePtr crs;
   ComPtr<ID3D12RootSignature> rs;
@@ -262,6 +280,7 @@ struct _GstD3D12ConverterPrivate
   ComPtr<ID3D12Resource> gamma_dec_lut;
   ComPtr<ID3D12Resource> gamma_enc_lut;
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT gamma_lut_layout;
+  ComPtr<ID3D12DescriptorHeap> gamma_lut_heap;
 
   std::vector<QuadData> quad_data;
 
@@ -659,18 +678,21 @@ gst_d3d12_converter_setup_resource (GstD3D12Converter * self,
   priv->quad_data.resize (psblob_list.size ());
 
   for (size_t i = 0; i < psblob_list.size (); i++) {
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = { };
+    priv->quad_data[i].input_desc[0] = input_desc[0];
+    priv->quad_data[i].input_desc[1] = input_desc[1];
+
+    auto & pso_desc = priv->quad_data[i].desc;
     pso_desc.pRootSignature = priv->rs.Get ();
     pso_desc.VS = vs_blob;
     pso_desc.PS = psblob_list[i].bytecode;
-    pso_desc.BlendState = CD3DX12_BLEND_DESC (D3D12_DEFAULT);
+    pso_desc.BlendState = priv->blend_desc;
     pso_desc.SampleMask = UINT_MAX;
     pso_desc.RasterizerState = CD3DX12_RASTERIZER_DESC (D3D12_DEFAULT);
     pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     pso_desc.DepthStencilState.DepthEnable = FALSE;
     pso_desc.DepthStencilState.StencilEnable = FALSE;
-    pso_desc.InputLayout.pInputElementDescs = input_desc;
-    pso_desc.InputLayout.NumElements = G_N_ELEMENTS (input_desc);
+    pso_desc.InputLayout.pInputElementDescs = priv->quad_data[i].input_desc;
+    pso_desc.InputLayout.NumElements = 2;
     pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso_desc.NumRenderTargets = psblob_list[i].num_rtv;
     for (UINT j = 0; j < pso_desc.NumRenderTargets; j++) {
@@ -742,7 +764,8 @@ gst_d3d12_converter_setup_resource (GstD3D12Converter * self,
     resource_desc =
         CD3DX12_RESOURCE_DESC::Buffer (sizeof (VertexData) * 4 +
         sizeof (g_indices));
-    hr = device->CreateCommittedResource (&heap_prop, D3D12_HEAP_FLAG_NONE,
+    hr = device->CreateCommittedResource (&heap_prop,
+        D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
         &resource_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
         IID_PPV_ARGS (&priv->vertex_index_buf));
     if (!gst_d3d12_result (hr, self->device)) {
@@ -759,7 +782,8 @@ gst_d3d12_converter_setup_resource (GstD3D12Converter * self,
     priv->idv.Format = DXGI_FORMAT_R16_UINT;
 
     heap_prop = CD3DX12_HEAP_PROPERTIES (D3D12_HEAP_TYPE_UPLOAD);
-    hr = device->CreateCommittedResource (&heap_prop, D3D12_HEAP_FLAG_NONE,
+    hr = device->CreateCommittedResource (&heap_prop,
+        D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
         &resource_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
         IID_PPV_ARGS (&upload_data->vertex_index_upload));
     if (!gst_d3d12_result (hr, self->device)) {
@@ -782,7 +806,8 @@ gst_d3d12_converter_setup_resource (GstD3D12Converter * self,
   {
     heap_prop = CD3DX12_HEAP_PROPERTIES (D3D12_HEAP_TYPE_DEFAULT);
     resource_desc = CD3DX12_RESOURCE_DESC::Buffer (sizeof (PSConstBuffer));
-    hr = device->CreateCommittedResource (&heap_prop, D3D12_HEAP_FLAG_NONE,
+    hr = device->CreateCommittedResource (&heap_prop,
+        D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
         &resource_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
         IID_PPV_ARGS (&priv->ps_const_buf));
     if (!gst_d3d12_result (hr, self->device)) {
@@ -791,7 +816,8 @@ gst_d3d12_converter_setup_resource (GstD3D12Converter * self,
     }
 
     heap_prop = CD3DX12_HEAP_PROPERTIES (D3D12_HEAP_TYPE_UPLOAD);
-    hr = device->CreateCommittedResource (&heap_prop, D3D12_HEAP_FLAG_NONE,
+    hr = device->CreateCommittedResource (&heap_prop,
+        D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
         &resource_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
         IID_PPV_ARGS (&upload_data->ps_const_upload));
     if (!gst_d3d12_result (hr, self->device)) {
@@ -814,7 +840,8 @@ gst_d3d12_converter_setup_resource (GstD3D12Converter * self,
     resource_desc = CD3DX12_RESOURCE_DESC::Tex1D (DXGI_FORMAT_R16_UNORM,
         GAMMA_LUT_SIZE, 1, 1);
 
-    hr = device->CreateCommittedResource (&heap_prop, D3D12_HEAP_FLAG_NONE,
+    hr = device->CreateCommittedResource (&heap_prop,
+        D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
         &resource_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
         IID_PPV_ARGS (&priv->gamma_dec_lut));
     if (!gst_d3d12_result (hr, self->device)) {
@@ -822,7 +849,8 @@ gst_d3d12_converter_setup_resource (GstD3D12Converter * self,
       return FALSE;
     }
 
-    hr = device->CreateCommittedResource (&heap_prop, D3D12_HEAP_FLAG_NONE,
+    hr = device->CreateCommittedResource (&heap_prop,
+        D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
         &resource_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
         IID_PPV_ARGS (&priv->gamma_enc_lut));
     if (!gst_d3d12_result (hr, self->device)) {
@@ -837,7 +865,8 @@ gst_d3d12_converter_setup_resource (GstD3D12Converter * self,
     heap_prop = CD3DX12_HEAP_PROPERTIES (D3D12_HEAP_TYPE_UPLOAD);
     resource_desc = CD3DX12_RESOURCE_DESC::Buffer (gamma_lut_size);
 
-    hr = device->CreateCommittedResource (&heap_prop, D3D12_HEAP_FLAG_NONE,
+    hr = device->CreateCommittedResource (&heap_prop,
+        D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
         &resource_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
         IID_PPV_ARGS (&upload_data->gamma_dec_lut_upload));
     if (!gst_d3d12_result (hr, self->device)) {
@@ -845,7 +874,8 @@ gst_d3d12_converter_setup_resource (GstD3D12Converter * self,
       return FALSE;
     }
 
-    hr = device->CreateCommittedResource (&heap_prop, D3D12_HEAP_FLAG_NONE,
+    hr = device->CreateCommittedResource (&heap_prop,
+        D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
         &resource_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
         IID_PPV_ARGS (&upload_data->gamma_enc_lut_upload));
     if (!gst_d3d12_result (hr, self->device)) {
@@ -876,6 +906,34 @@ gst_d3d12_converter_setup_resource (GstD3D12Converter * self,
 
     memcpy (data, gamma_enc_table->lut, GAMMA_LUT_SIZE * sizeof (guint16));
     upload_data->gamma_enc_lut_upload->Unmap (0, nullptr);
+
+    D3D12_DESCRIPTOR_HEAP_DESC desc = { };
+    desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    desc.NumDescriptors = 2;
+    desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+    auto hr = device->CreateDescriptorHeap (&desc,
+        IID_PPV_ARGS (&priv->gamma_lut_heap));
+    if (!gst_d3d12_result (hr, self->device)) {
+      GST_ERROR_OBJECT (self, "Couldn't map gamma lut upload buffer");
+      return FALSE;
+    }
+
+    auto cpu_handle =
+        CD3DX12_CPU_DESCRIPTOR_HANDLE
+        (priv->gamma_lut_heap->GetCPUDescriptorHandleForHeapStart ());
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = { };
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv_desc.Texture1D.MipLevels = 1;
+
+    device->CreateShaderResourceView (priv->gamma_dec_lut.Get (), &srv_desc,
+        cpu_handle);
+    cpu_handle.Offset (priv->srv_inc_size);
+
+    device->CreateShaderResourceView (priv->gamma_enc_lut.Get (), &srv_desc,
+        cpu_handle);
   }
 
   priv->input_texture_width = GST_VIDEO_INFO_WIDTH (in_info);
@@ -924,7 +982,6 @@ gst_d3d12_converter_apply_orientation (GstD3D12Converter * self)
   switch (priv->video_direction) {
     case GST_VIDEO_ORIENTATION_IDENTITY:
     case GST_VIDEO_ORIENTATION_AUTO:
-    case GST_VIDEO_ORIENTATION_CUSTOM:
     default:
       priv->transform = g_matrix_identity;
       break;
@@ -949,6 +1006,8 @@ gst_d3d12_converter_apply_orientation (GstD3D12Converter * self)
     case GST_VIDEO_ORIENTATION_UR_LL:
       priv->transform = g_matrix_ur_ll;
       break;
+    case GST_VIDEO_ORIENTATION_CUSTOM:
+      priv->transform = priv->custom_transform;
   }
 
   return TRUE;
@@ -1532,7 +1591,8 @@ gst_d3d12_converter_calculate_border_color (GstD3D12Converter * self)
 
 GstD3D12Converter *
 gst_d3d12_converter_new (GstD3D12Device * device, const GstVideoInfo * in_info,
-    const GstVideoInfo * out_info, GstStructure * config)
+    const GstVideoInfo * out_info, const D3D12_BLEND_DESC * blend_desc,
+    const gfloat blend_factor[4], GstStructure * config)
 {
   GstD3D12Converter *self;
   GstD3D12Format in_d3d12_format;
@@ -1550,6 +1610,14 @@ gst_d3d12_converter_new (GstD3D12Device * device, const GstVideoInfo * in_info,
   self = (GstD3D12Converter *) g_object_new (GST_TYPE_D3D12_CONVERTER, nullptr);
   gst_object_ref_sink (self);
   auto priv = self->priv;
+
+  if (blend_desc)
+    priv->blend_desc = *blend_desc;
+
+  if (blend_factor) {
+    for (guint i = 0; i < 4; i++)
+      priv->blend_factor[i] = blend_factor[i];
+  }
 
   if (config) {
     gint value;
@@ -1707,33 +1775,54 @@ gst_d3d12_converter_new (GstD3D12Device * device, const GstVideoInfo * in_info,
 }
 
 static gboolean
+gst_d3d12_converter_update_pso (GstD3D12Converter * self)
+{
+  auto priv = self->priv;
+  if (!priv->update_pso)
+    return TRUE;
+
+  std::vector < QuadData > quad_data;
+  quad_data.resize (priv->quad_data.size ());
+
+  auto device = gst_d3d12_device_get_device_handle (self->device);
+
+  for (size_t i = 0; i < quad_data.size (); i++) {
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = priv->quad_data[i].desc;
+    pso_desc.BlendState = priv->blend_desc;
+    pso_desc.SampleDesc = priv->sample_desc;
+
+    ComPtr < ID3D12PipelineState > pso;
+    auto hr =
+        device->CreateGraphicsPipelineState (&pso_desc, IID_PPV_ARGS (&pso));
+    if (!gst_d3d12_result (hr, self->device)) {
+      GST_ERROR_OBJECT (self, "Couldn't create pso");
+      return FALSE;
+    }
+
+    quad_data[i].desc = pso_desc;
+    quad_data[i].pso = pso;
+    quad_data[i].num_rtv = priv->quad_data[i].num_rtv;
+  }
+
+  priv->update_pso = FALSE;
+  priv->quad_data = quad_data;
+
+  return TRUE;
+}
+
+static void
+pso_free_func (ID3D12PipelineState * pso)
+{
+  if (pso)
+    pso->Release ();
+}
+
+static gboolean
 gst_d3d12_converter_execute (GstD3D12Converter * self,
     GstBuffer * in_buf, GstBuffer * out_buf, GstD3D12FenceData * fence_data,
     ID3D12GraphicsCommandList * cl)
 {
   auto priv = self->priv;
-
-  ComPtr < ID3D12DescriptorHeap > srv_heap;
-  bool create_srv = true;
-  if (!priv->crs->HaveLut () && gst_buffer_n_memory (in_buf) == 1) {
-    auto mem = (GstD3D12Memory *) gst_buffer_peek_memory (in_buf, 0);
-    if (!gst_d3d12_memory_get_shader_resource_view_heap (mem, &srv_heap)) {
-      GST_ERROR_OBJECT (self, "Couldn't get srv heap from memory");
-      return FALSE;
-    }
-
-    create_srv = false;
-  } else {
-    GstD3D12Descriptor *descriptor;
-    if (!gst_d3d12_descriptor_pool_acquire (priv->srv_heap_pool, &descriptor)) {
-      GST_ERROR_OBJECT (self, "Couldn't acquire srv heap");
-      return FALSE;
-    }
-
-    gst_d3d12_descriptor_get_handle (descriptor, &srv_heap);
-    gst_d3d12_fence_data_add_notify (fence_data, descriptor,
-        (GDestroyNotify) gst_d3d12_descriptor_unref);
-  }
 
   std::lock_guard < std::mutex > lk (priv->prop_lock);
   auto mem = (GstD3D12Memory *) gst_buffer_peek_memory (in_buf, 0);
@@ -1749,6 +1838,16 @@ gst_d3d12_converter_execute (GstD3D12Converter * self,
     priv->update_src_rect = TRUE;
   }
 
+  mem = (GstD3D12Memory *) gst_buffer_peek_memory (out_buf, 0);
+  resource = gst_d3d12_memory_get_resource_handle (mem);
+  desc = resource->GetDesc ();
+  if (desc.SampleDesc.Count != priv->sample_desc.Count ||
+      desc.SampleDesc.Quality != priv->sample_desc.Quality) {
+    GST_DEBUG_OBJECT (self, "Sample desc updated");
+    priv->sample_desc = desc.SampleDesc;
+    priv->update_pso = TRUE;
+  }
+
   if (!gst_d3d12_converter_update_dest_rect (self)) {
     GST_ERROR_OBJECT (self, "Failed to update dest rect");
     return FALSE;
@@ -1761,6 +1860,11 @@ gst_d3d12_converter_execute (GstD3D12Converter * self,
 
   if (!gst_d3d12_converter_update_transform (self)) {
     GST_ERROR_OBJECT (self, "Failed to update transform matrix");
+    return FALSE;
+  }
+
+  if (!gst_d3d12_converter_update_pso (self)) {
+    GST_ERROR_OBJECT (self, "Failed to update pso");
     return FALSE;
   }
 
@@ -1844,43 +1948,44 @@ gst_d3d12_converter_execute (GstD3D12Converter * self,
           upload_data->vertex_index_upload.Get ());
     }
   }
-  priv->is_first = false;
 
   auto device = gst_d3d12_device_get_device_handle (self->device);
 
-  guint srv_offset = 0;
+  ComPtr < ID3D12DescriptorHeap > srv_heap;
+  GstD3D12Descriptor *descriptor;
+  if (!gst_d3d12_descriptor_pool_acquire (priv->srv_heap_pool, &descriptor)) {
+    GST_ERROR_OBJECT (self, "Couldn't acquire srv heap");
+    return FALSE;
+  }
+
+  gst_d3d12_descriptor_get_handle (descriptor, &srv_heap);
+  gst_d3d12_fence_data_add_notify (fence_data, descriptor,
+      (GDestroyNotify) gst_d3d12_descriptor_unref);
+
+  auto cpu_handle =
+      CD3DX12_CPU_DESCRIPTOR_HANDLE
+      (srv_heap->GetCPUDescriptorHandleForHeapStart ());
+
   for (guint i = 0; i < gst_buffer_n_memory (in_buf); i++) {
     auto mem = (GstD3D12Memory *) gst_buffer_peek_memory (in_buf, i);
     auto num_planes = gst_d3d12_memory_get_plane_count (mem);
+    ComPtr < ID3D12DescriptorHeap > mem_srv_heap;
 
-    for (guint plane = 0; plane < num_planes; plane++) {
-      if (create_srv &&
-          !gst_d3d12_memory_create_shader_resource_view (mem, plane, srv_offset,
-              srv_heap.Get ())) {
-        GST_ERROR_OBJECT (self, "Couldn't create SRV");
-        return FALSE;
-      }
-      srv_offset++;
+    if (!gst_d3d12_memory_get_shader_resource_view_heap (mem, &mem_srv_heap)) {
+      GST_ERROR_OBJECT (self, "Couldn't get SRV");
+      return FALSE;
     }
+
+    device->CopyDescriptorsSimple (num_planes, cpu_handle,
+        mem_srv_heap->GetCPUDescriptorHandleForHeapStart (),
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    cpu_handle.Offset (num_planes, priv->srv_inc_size);
   }
 
   if (priv->crs->HaveLut ()) {
-    auto cpu_handle =
-        CD3DX12_CPU_DESCRIPTOR_HANDLE
-        (srv_heap->GetCPUDescriptorHandleForHeapStart (),
-        srv_offset, priv->srv_inc_size);
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = { };
-    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
-    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv_desc.Texture1D.MipLevels = 1;
-
-    device->CreateShaderResourceView (priv->gamma_dec_lut.Get (), &srv_desc,
-        cpu_handle);
-    cpu_handle.Offset (priv->srv_inc_size);
-
-    device->CreateShaderResourceView (priv->gamma_enc_lut.Get (), &srv_desc,
-        cpu_handle);
+    device->CopyDescriptorsSimple (2, cpu_handle,
+        priv->gamma_lut_heap->GetCPUDescriptorHandleForHeapStart (),
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   }
 
   for (guint i = 0; i < gst_buffer_n_memory (out_buf); i++) {
@@ -1913,8 +2018,10 @@ gst_d3d12_converter_execute (GstD3D12Converter * self,
     }
   }
 
+  auto pso = priv->quad_data[0].pso.Get ();
+
   cl->SetGraphicsRootSignature (priv->rs.Get ());
-  cl->SetPipelineState (priv->quad_data[0].pso.Get ());
+  cl->SetPipelineState (pso);
 
   ID3D12DescriptorHeap *heaps[] = { srv_heap.Get () };
   cl->SetDescriptorHeaps (1, heaps);
@@ -1934,17 +2041,28 @@ gst_d3d12_converter_execute (GstD3D12Converter * self,
   cl->RSSetScissorRects (priv->quad_data[0].num_rtv, priv->scissor_rect);
   cl->OMSetRenderTargets (priv->quad_data[0].num_rtv,
       rtv_handles.data (), FALSE, nullptr);
+  cl->OMSetBlendFactor (priv->blend_factor);
   cl->DrawIndexedInstanced (6, 1, 0, 0, 0);
+
+  pso->AddRef ();
+  gst_d3d12_fence_data_add_notify (fence_data, pso,
+      (GDestroyNotify) pso_free_func);
 
   auto offset = priv->quad_data[0].num_rtv;
   if (priv->quad_data.size () == 2) {
-    cl->SetPipelineState (priv->quad_data[1].pso.Get ());
+    pso = priv->quad_data[1].pso.Get ();
+
+    cl->SetPipelineState (pso);
     cl->RSSetViewports (priv->quad_data[1].num_rtv, &priv->viewport[offset]);
     cl->RSSetScissorRects (priv->quad_data[1].num_rtv,
         &priv->scissor_rect[offset]);
     cl->OMSetRenderTargets (priv->quad_data[1].num_rtv,
         rtv_handles.data () + offset, FALSE, nullptr);
     cl->DrawIndexedInstanced (6, 1, 0, 0, 0);
+
+    pso->AddRef ();
+    gst_d3d12_fence_data_add_notify (fence_data, pso,
+        (GDestroyNotify) pso_free_func);
   }
 
   gst_d3d12_fence_data_add_notify (fence_data,
@@ -1954,6 +2072,7 @@ gst_d3d12_converter_execute (GstD3D12Converter * self,
         priv->upload_data, (GDestroyNotify) converter_upload_data_free);
   }
   priv->upload_data = nullptr;
+  priv->is_first = false;
 
   return TRUE;
 }
@@ -1995,6 +2114,104 @@ gst_d3d12_converter_unmap_buffer (GstBuffer * buffer,
   }
 }
 
+static GstBuffer *
+gst_d3d12_converter_upload_buffer (GstD3D12Converter * self, GstBuffer * in_buf)
+{
+  GstVideoFrame in_frame, out_frame;
+  auto priv = self->priv;
+  GstBuffer *fallback_buf = nullptr;
+
+  if (!gst_video_frame_map (&in_frame, &priv->in_info, in_buf, GST_MAP_READ)) {
+    GST_ERROR_OBJECT (self, "Couldn't map video frame");
+    return nullptr;
+  }
+
+  if (priv->fallback_pool) {
+    if (priv->fallback_pool_info.width != in_frame.info.width ||
+        priv->fallback_pool_info.height != in_frame.info.height) {
+      gst_buffer_pool_set_active (priv->fallback_pool, FALSE);
+      gst_clear_object (&priv->fallback_pool);
+    }
+  }
+
+  if (!priv->fallback_pool) {
+    priv->fallback_pool = gst_d3d12_buffer_pool_new (self->device);
+    priv->fallback_pool_info = in_frame.info;
+    auto caps = gst_video_info_to_caps (&in_frame.info);
+    auto config = gst_buffer_pool_get_config (priv->fallback_pool);
+    auto params = gst_d3d12_allocation_params_new (self->device, &in_frame.info,
+        GST_D3D12_ALLOCATION_FLAG_DEFAULT,
+        D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
+    gst_buffer_pool_config_set_d3d12_allocation_params (config, params);
+    gst_d3d12_allocation_params_free (params);
+    gst_buffer_pool_config_set_params (config, caps, in_frame.info.size, 0, 0);
+    gst_caps_unref (caps);
+
+    if (!gst_buffer_pool_set_config (priv->fallback_pool, config)) {
+      GST_ERROR_OBJECT (self, "Couldn't set pool config");
+      gst_video_frame_unmap (&in_frame);
+      gst_clear_object (&priv->fallback_pool);
+      return nullptr;
+    }
+
+    if (!gst_buffer_pool_set_active (priv->fallback_pool, TRUE)) {
+      GST_ERROR_OBJECT (self, "Failed to set active");
+      gst_video_frame_unmap (&in_frame);
+      gst_clear_object (&priv->fallback_pool);
+      return nullptr;
+    }
+  }
+
+  gst_buffer_pool_acquire_buffer (priv->fallback_pool, &fallback_buf, nullptr);
+  if (!fallback_buf) {
+    GST_ERROR_OBJECT (self, "Couldn't acquire fallback buf");
+    gst_video_frame_unmap (&in_frame);
+    return nullptr;
+  }
+
+  if (!gst_video_frame_map (&out_frame, &priv->fallback_pool_info, fallback_buf,
+          GST_MAP_WRITE)) {
+    GST_ERROR_OBJECT (self, "Couldn't map output frame");
+    gst_video_frame_unmap (&in_frame);
+    gst_buffer_unref (fallback_buf);
+    return nullptr;
+  }
+
+  auto copy_ret = gst_video_frame_copy (&out_frame, &in_frame);
+  gst_video_frame_unmap (&out_frame);
+  gst_video_frame_unmap (&in_frame);
+
+  if (!copy_ret) {
+    GST_ERROR_OBJECT (self, "Couldn't copy to fallback buffer");
+    gst_buffer_unref (fallback_buf);
+    return nullptr;
+  }
+
+  return fallback_buf;
+}
+
+static gboolean
+gst_d3d12_converter_check_needs_upload (GstD3D12Converter * self,
+    GstBuffer * buf)
+{
+  auto mem = gst_buffer_peek_memory (buf, 0);
+  if (!gst_is_d3d12_memory (mem))
+    return TRUE;
+
+  auto dmem = GST_D3D12_MEMORY_CAST (mem);
+  if (dmem->device != self->device)
+    return TRUE;
+
+  auto resource = gst_d3d12_memory_get_resource_handle (dmem);
+  auto desc = resource->GetDesc ();
+  if ((desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) ==
+      D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) {
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
 gboolean
 gst_d3d12_converter_convert_buffer (GstD3D12Converter * converter,
     GstBuffer * in_buf, GstBuffer * out_buf, GstD3D12FenceData * fence_data,
@@ -2007,24 +2224,138 @@ gst_d3d12_converter_convert_buffer (GstD3D12Converter * converter,
   g_return_val_if_fail (cl, FALSE);
 
   GstMapInfo in_info[GST_VIDEO_MAX_PLANES];
-  GstMapInfo out_info[GST_VIDEO_MAX_PLANES];
+
+  gboolean need_upload = gst_d3d12_converter_check_needs_upload (converter,
+      in_buf);
+
+  if (need_upload) {
+    in_buf = gst_d3d12_converter_upload_buffer (converter, in_buf);
+    if (!in_buf)
+      return FALSE;
+  }
 
   if (!gst_d3d12_converter_map_buffer (in_buf, in_info, GST_MAP_READ)) {
     GST_ERROR_OBJECT (converter, "Couldn't map input buffer");
+    if (need_upload)
+      gst_buffer_unref (in_buf);
     return FALSE;
   }
-
-  if (!gst_d3d12_converter_map_buffer (out_buf, out_info, GST_MAP_WRITE)) {
-    GST_ERROR_OBJECT (converter, "Couldn't map output buffer");
-    gst_d3d12_converter_unmap_buffer (in_buf, in_info);
-    return FALSE;
-  }
+  gst_d3d12_converter_unmap_buffer (in_buf, in_info);
 
   auto ret = gst_d3d12_converter_execute (converter,
       in_buf, out_buf, fence_data, cl);
 
-  gst_d3d12_converter_unmap_buffer (out_buf, out_info);
-  gst_d3d12_converter_unmap_buffer (in_buf, in_info);
+  /* fence data will hold this buffer */
+  if (need_upload)
+    gst_buffer_unref (in_buf);
 
   return ret;
+}
+
+gboolean
+gst_d3d12_converter_update_blend_state (GstD3D12Converter * converter,
+    const D3D12_BLEND_DESC * blend_desc, const gfloat blend_factor[4])
+{
+  g_return_val_if_fail (GST_IS_D3D12_CONVERTER (converter), FALSE);
+
+  auto priv = converter->priv;
+  std::lock_guard < std::mutex > lk (priv->prop_lock);
+  D3D12_BLEND_DESC new_blend = CD3DX12_BLEND_DESC (D3D12_DEFAULT);
+
+  if (blend_desc)
+    new_blend = *blend_desc;
+
+  if (memcmp (&priv->blend_desc, &new_blend, sizeof (D3D12_BLEND_DESC)) != 0)
+    priv->update_pso = TRUE;
+
+  if (blend_factor) {
+    for (guint i = 0; i < 4; i++)
+      priv->blend_factor[i] = blend_factor[i];
+  } else {
+    for (guint i = 0; i < 4; i++)
+      priv->blend_factor[i] = 1.0f;
+  }
+
+  return TRUE;
+}
+
+gboolean
+gst_d3d12_converter_apply_transform (GstD3D12Converter * converter,
+    GstVideoOrientationMethod orientation, gfloat viewport_width,
+    gfloat viewport_height, gfloat fov, gboolean ortho, gfloat rotation_x,
+    gfloat rotation_y, gfloat rotation_z, gfloat scale_x, gfloat scale_y)
+{
+  g_return_val_if_fail (GST_IS_D3D12_CONVERTER (converter), FALSE);
+
+  auto priv = converter->priv;
+  std::lock_guard < std::mutex > lk (priv->prop_lock);
+
+  gfloat aspect_ratio;
+  gboolean rotated = FALSE;
+  XMMATRIX rotate_matrix = XMMatrixIdentity ();
+
+  switch (orientation) {
+    case GST_VIDEO_ORIENTATION_IDENTITY:
+    case GST_VIDEO_ORIENTATION_AUTO:
+    case GST_VIDEO_ORIENTATION_CUSTOM:
+    default:
+      break;
+    case GST_VIDEO_ORIENTATION_90R:
+      rotate_matrix = XMLoadFloat4x4A (&g_matrix_90r);
+      rotated = TRUE;
+      break;
+    case GST_VIDEO_ORIENTATION_180:
+      rotate_matrix = XMLoadFloat4x4A (&g_matrix_180);
+      break;
+    case GST_VIDEO_ORIENTATION_90L:
+      rotate_matrix = XMLoadFloat4x4A (&g_matrix_90l);
+      rotated = TRUE;
+      break;
+    case GST_VIDEO_ORIENTATION_HORIZ:
+      rotate_matrix = XMLoadFloat4x4A (&g_matrix_horiz);
+      break;
+    case GST_VIDEO_ORIENTATION_VERT:
+      rotate_matrix = XMLoadFloat4x4A (&g_matrix_vert);
+      break;
+    case GST_VIDEO_ORIENTATION_UL_LR:
+      rotate_matrix = XMLoadFloat4x4A (&g_matrix_ul_lr);
+      rotated = TRUE;
+      break;
+    case GST_VIDEO_ORIENTATION_UR_LL:
+      rotate_matrix = XMLoadFloat4x4A (&g_matrix_ur_ll);
+      rotated = TRUE;
+      break;
+  }
+
+  if (rotated)
+    aspect_ratio = viewport_height / viewport_width;
+  else
+    aspect_ratio = viewport_width / viewport_height;
+
+  /* Apply user specified transform matrix first, then rotate-method */
+  XMMATRIX scale = XMMatrixScaling (scale_x * aspect_ratio, scale_y, 1.0);
+
+  XMMATRIX rotate =
+      XMMatrixRotationX (XMConvertToRadians (rotation_x)) *
+      XMMatrixRotationY (XMConvertToRadians (-rotation_y)) *
+      XMMatrixRotationZ (XMConvertToRadians (-rotation_z));
+
+  XMMATRIX view = XMMatrixLookAtLH (XMVectorSet (0.0, 0.0, -1.0, 0.0),
+      XMVectorSet (0.0, 0.0, 0.0, 0.0), XMVectorSet (0.0, 1.0, 0.0, 0.0));
+
+  XMMATRIX proj;
+  if (ortho) {
+    proj = XMMatrixOrthographicOffCenterLH (-aspect_ratio,
+        aspect_ratio, -1.0, 1.0, 0.1, 100.0);
+  } else {
+    proj = XMMatrixPerspectiveFovLH (XMConvertToRadians (fov),
+        aspect_ratio, 0.1, 100.0);
+  }
+
+  XMMATRIX mvp = scale * rotate * view * proj * rotate_matrix;
+  XMStoreFloat4x4A (&priv->custom_transform, mvp);
+  priv->update_transform = TRUE;
+  priv->video_direction = GST_VIDEO_ORIENTATION_CUSTOM;
+
+  return TRUE;
 }

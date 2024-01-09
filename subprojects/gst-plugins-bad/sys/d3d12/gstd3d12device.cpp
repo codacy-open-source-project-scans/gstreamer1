@@ -23,6 +23,7 @@
 
 #include "gstd3d12.h"
 #include "gstd3d12-private.h"
+#include "gstd3d11on12.h"
 #include <wrl.h>
 #include <vector>
 #include <string.h>
@@ -89,8 +90,11 @@ struct _GstD3D12DevicePrivate
   ComPtr<IDXGIFactory2> factory;
   std::unordered_map<GstVideoFormat, GstD3D12Format> format_table;
   std::recursive_mutex extern_lock;
+  std::mutex lock;
 
   ComPtr<ID3D12InfoQueue> info_queue;
+
+  ComPtr<IUnknown> d3d11on12;
 
   GstD3D12CommandQueue *direct_queue = nullptr;
   GstD3D12CommandQueue *copy_queue = nullptr;
@@ -544,22 +548,6 @@ gst_d3d12_device_new_internal (const GstD3D12DeviceConstructData * data)
     return nullptr;
   }
 
-  ComPtr < ID3D12Fence > copy_fence;
-  hr = device->CreateFence (0,
-      D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS (&copy_fence));
-  if (FAILED (hr)) {
-    GST_ERROR ("Couldn't create copy fence");
-    return nullptr;
-  }
-
-  ComPtr < ID3D12Fence > direct_fence;
-  hr = device->CreateFence (0,
-      D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS (&direct_fence));
-  if (FAILED (hr)) {
-    GST_ERROR ("Couldn't create fence");
-    return nullptr;
-  }
-
   GstD3D12Device *self = (GstD3D12Device *)
       g_object_new (GST_TYPE_D3D12_DEVICE, nullptr);
   GstD3D12DevicePrivate *priv = self->priv;
@@ -570,6 +558,7 @@ gst_d3d12_device_new_internal (const GstD3D12DeviceConstructData * data)
   priv->adapter_luid = gst_d3d12_luid_to_int64 (&desc.AdapterLuid);
   priv->vendor_id = desc.VendorId;
   priv->device_id = desc.DeviceId;
+  priv->adapter_index = index;
 
   std::wstring_convert < std::codecvt_utf8 < wchar_t >, wchar_t >converter;
   priv->description = converter.to_bytes (desc.Description);
@@ -722,6 +711,51 @@ gst_d3d12_device_get_factory_handle (GstD3D12Device * device)
   g_return_val_if_fail (GST_IS_D3D12_DEVICE (device), nullptr);
 
   return device->priv->factory.Get ();
+}
+
+gboolean
+gst_d3d12_device_get_d3d11on12_device (GstD3D12Device * device,
+    IUnknown ** d3d11on12)
+{
+  g_return_val_if_fail (GST_IS_D3D12_DEVICE (device), FALSE);
+  g_return_val_if_fail (d3d11on12, FALSE);
+
+  auto priv = device->priv;
+
+  std::lock_guard < std::mutex > lk (priv->lock);
+  if (!priv->d3d11on12) {
+    ComPtr < ID3D12CommandQueue > cq;
+    gst_d3d12_command_queue_get_handle (priv->direct_queue, &cq);
+    auto hr = GstD3D11On12CreateDevice (priv->device.Get (), cq.Get (),
+        &priv->d3d11on12);
+    if (!gst_d3d12_result (hr, device)) {
+      GST_ERROR_OBJECT (device, "Couldn't create d3d11on12 device");
+      return FALSE;
+    }
+  }
+
+  *d3d11on12 = priv->d3d11on12.Get ();
+  (*d3d11on12)->AddRef ();
+
+  return TRUE;
+}
+
+void
+gst_d3d12_device_lock (GstD3D12Device * device)
+{
+  g_return_if_fail (GST_IS_D3D12_DEVICE (device));
+
+  auto priv = device->priv;
+  priv->extern_lock.lock ();
+}
+
+void
+gst_d3d12_device_unlock (GstD3D12Device * device)
+{
+  g_return_if_fail (GST_IS_D3D12_DEVICE (device));
+
+  auto priv = device->priv;
+  priv->extern_lock.unlock ();
 }
 
 gboolean

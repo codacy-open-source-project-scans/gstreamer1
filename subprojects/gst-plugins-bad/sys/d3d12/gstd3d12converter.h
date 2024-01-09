@@ -136,6 +136,8 @@ GType               gst_d3d12_converter_get_type (void);
 GstD3D12Converter * gst_d3d12_converter_new  (GstD3D12Device * device,
                                               const GstVideoInfo * in_info,
                                               const GstVideoInfo * out_info,
+                                              const D3D12_BLEND_DESC * blend_desc,
+                                              const gfloat blend_factor[4],
                                               GstStructure * config);
 
 gboolean            gst_d3d12_converter_convert_buffer (GstD3D12Converter * converter,
@@ -143,5 +145,21 @@ gboolean            gst_d3d12_converter_convert_buffer (GstD3D12Converter * conv
                                                         GstBuffer * out_buf,
                                                         GstD3D12FenceData * fence_data,
                                                         ID3D12GraphicsCommandList * command_list);
+
+gboolean            gst_d3d12_converter_update_blend_state (GstD3D12Converter * converter,
+                                                            const D3D12_BLEND_DESC * blend_desc,
+                                                            const gfloat blend_factor[4]);
+
+gboolean            gst_d3d12_converter_apply_transform (GstD3D12Converter * converter,
+                                                         GstVideoOrientationMethod orientation,
+                                                         gfloat viewport_width,
+                                                         gfloat viewport_height,
+                                                         gfloat fov,
+                                                         gboolean ortho,
+                                                         gfloat rotation_x,
+                                                         gfloat rotation_y,
+                                                         gfloat rotation_z,
+                                                         gfloat scale_x,
+                                                         gfloat scale_y);
 
 G_END_DECLS
