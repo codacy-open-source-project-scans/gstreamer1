@@ -766,7 +766,7 @@ gst_d3d12_converter_setup_resource (GstD3D12Converter * self,
         sizeof (g_indices));
     hr = device->CreateCommittedResource (&heap_prop,
         D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
-        &resource_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+        &resource_desc, D3D12_RESOURCE_STATE_COMMON, nullptr,
         IID_PPV_ARGS (&priv->vertex_index_buf));
     if (!gst_d3d12_result (hr, self->device)) {
       GST_ERROR_OBJECT (self, "Couldn't create vertex buffer");
@@ -808,7 +808,7 @@ gst_d3d12_converter_setup_resource (GstD3D12Converter * self,
     resource_desc = CD3DX12_RESOURCE_DESC::Buffer (sizeof (PSConstBuffer));
     hr = device->CreateCommittedResource (&heap_prop,
         D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
-        &resource_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+        &resource_desc, D3D12_RESOURCE_STATE_COMMON, nullptr,
         IID_PPV_ARGS (&priv->ps_const_buf));
     if (!gst_d3d12_result (hr, self->device)) {
       GST_ERROR_OBJECT (self, "Couldn't create const buffer");
@@ -1810,13 +1810,6 @@ gst_d3d12_converter_update_pso (GstD3D12Converter * self)
   return TRUE;
 }
 
-static void
-pso_free_func (ID3D12PipelineState * pso)
-{
-  if (pso)
-    pso->Release ();
-}
-
 static gboolean
 gst_d3d12_converter_execute (GstD3D12Converter * self,
     GstBuffer * in_buf, GstBuffer * out_buf, GstD3D12FenceData * fence_data,
@@ -1959,8 +1952,7 @@ gst_d3d12_converter_execute (GstD3D12Converter * self,
   }
 
   gst_d3d12_descriptor_get_handle (descriptor, &srv_heap);
-  gst_d3d12_fence_data_add_notify (fence_data, descriptor,
-      (GDestroyNotify) gst_d3d12_descriptor_unref);
+  gst_d3d12_fence_data_add_notify_mini_object (fence_data, descriptor);
 
   auto cpu_handle =
       CD3DX12_CPU_DESCRIPTOR_HANDLE
@@ -2045,8 +2037,7 @@ gst_d3d12_converter_execute (GstD3D12Converter * self,
   cl->DrawIndexedInstanced (6, 1, 0, 0, 0);
 
   pso->AddRef ();
-  gst_d3d12_fence_data_add_notify (fence_data, pso,
-      (GDestroyNotify) pso_free_func);
+  gst_d3d12_fence_data_add_notify_com (fence_data, pso);
 
   auto offset = priv->quad_data[0].num_rtv;
   if (priv->quad_data.size () == 2) {
@@ -2061,12 +2052,11 @@ gst_d3d12_converter_execute (GstD3D12Converter * self,
     cl->DrawIndexedInstanced (6, 1, 0, 0, 0);
 
     pso->AddRef ();
-    gst_d3d12_fence_data_add_notify (fence_data, pso,
-        (GDestroyNotify) pso_free_func);
+    gst_d3d12_fence_data_add_notify_com (fence_data, pso);
   }
 
-  gst_d3d12_fence_data_add_notify (fence_data,
-      gst_buffer_ref (in_buf), (GDestroyNotify) gst_buffer_unref);
+  gst_d3d12_fence_data_add_notify_mini_object (fence_data,
+      gst_buffer_ref (in_buf));
   if (priv->upload_data) {
     gst_d3d12_fence_data_add_notify (fence_data,
         priv->upload_data, (GDestroyNotify) converter_upload_data_free);

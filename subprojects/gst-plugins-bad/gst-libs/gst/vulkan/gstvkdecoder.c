@@ -183,8 +183,8 @@ gst_vulkan_decoder_start (GstVulkanDecoder * self,
   }
 
   self->profile = *profile;
-  self->profile.profile.pNext = &self->profile.usage;
-  self->profile.usage.pNext = &self->profile.codec;
+  self->profile.profile.pNext = &self->profile.usage.decode;
+  self->profile.usage.decode.pNext = &self->profile.codec;
 
   switch (self->codec) {
     case VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR:
@@ -588,7 +588,8 @@ gst_vulkan_decoder_create_dpb_pool (GstVulkanDecoder * self, GstCaps * caps)
   gst_buffer_pool_config_set_params (config, caps, 1024, min_buffers,
       max_buffers);
   gst_vulkan_image_buffer_pool_config_set_allocation_params (config, usage,
-      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR,
+      VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
 
   if (self->layered_dpb) {
     gst_structure_set (config, "num-layers", G_TYPE_UINT,

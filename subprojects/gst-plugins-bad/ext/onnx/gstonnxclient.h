@@ -28,6 +28,7 @@
 #include "gstml.h"
 #include "tensor/gsttensormeta.h"
 
+GST_DEBUG_CATEGORY_EXTERN (onnx_inference_debug);
 
 typedef enum
 {
@@ -48,14 +49,13 @@ namespace GstOnnxNamespace {
 
   class GstOnnxClient {
   public:
-    GstOnnxClient(void);
+    GstOnnxClient(GstElement *debug_parent);
     ~GstOnnxClient(void);
     bool createSession(std::string modelFile, GstOnnxOptimizationLevel optim,
                        GstOnnxExecutionProvider provider);
     bool hasSession(void);
     void setInputImageFormat(GstMlInputImageFormat format);
     GstMlInputImageFormat getInputImageFormat(void);
-    void setInputImageDatatype(GstTensorType datatype);
     GstTensorType getInputImageDatatype(void);
     void setInputImageOffset (float offset);
     float getInputImageOffset ();
@@ -66,10 +66,14 @@ namespace GstOnnxNamespace {
     bool isFixedInputImageSize(void);
     int32_t getWidth(void);
     int32_t getHeight(void);
-    GstTensorMeta* copy_tensors_to_meta(std::vector < Ort::Value > &outputs,GstBuffer* buffer);
+    int32_t getChannels (void);
+    GstTensorMeta *copy_tensors_to_meta (std::vector<Ort::Value> &outputs,
+                                         GstBuffer *buffer);
     void parseDimensions(GstVideoInfo vinfo);
   private:
 
+    GstElement *debug_parent;
+    void setInputImageDatatype (GstTensorType datatype);
     template < typename T>
     void convert_image_remove_alpha (T *dest, GstMlInputImageFormat hwc,
         uint8_t **srcPtr, uint32_t srcSamplesPerPixel, uint32_t stride, T offset, T div);

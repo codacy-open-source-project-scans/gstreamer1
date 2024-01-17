@@ -216,9 +216,6 @@ struct DecoderCmdData
 
   ~DecoderCmdData ()
   {
-    if (queue)
-      gst_d3d12_command_queue_fence_wait (queue, G_MAXUINT64, event_handle);
-
     CloseHandle (event_handle);
     gst_clear_object (&ca_pool);
     gst_clear_object (&queue);
@@ -503,6 +500,14 @@ gst_d3d12_decoder_close (GstD3D12Decoder * decoder)
 {
   auto priv = decoder->priv;
 
+  GST_DEBUG_OBJECT (decoder, "Close");
+
+  if (priv->cmd) {
+    gst_d3d12_command_queue_fence_wait (priv->cmd->queue, priv->cmd->fence_val,
+        priv->cmd->event_handle);
+  }
+
+  priv->session = nullptr;
   priv->cmd = nullptr;
 
   gst_clear_object (&decoder->device);
@@ -712,6 +717,8 @@ gst_d3d12_decoder_configure (GstD3D12Decoder * decoder,
   auto params = gst_d3d12_allocation_params_new (decoder->device, info,
       GST_D3D12_ALLOCATION_FLAG_DEFAULT, resource_flags);
   gst_d3d12_allocation_params_alignment (params, &align);
+  gst_d3d12_allocation_params_set_heap_flags (params,
+      D3D12_HEAP_FLAG_CREATE_NOT_ZEROED);
   if (!session->array_of_textures)
     gst_d3d12_allocation_params_set_array_size (params, session->dpb_size);
 
@@ -743,6 +750,8 @@ gst_d3d12_decoder_configure (GstD3D12Decoder * decoder,
         GST_D3D12_ALLOCATION_FLAG_DEFAULT,
         D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
     gst_d3d12_allocation_params_alignment (params, &align);
+    gst_d3d12_allocation_params_set_heap_flags (params,
+        D3D12_HEAP_FLAG_CREATE_NOT_ZEROED);
     gst_buffer_pool_config_set_d3d12_allocation_params (config, params);
     gst_d3d12_allocation_params_free (params);
     gst_buffer_pool_config_set_params (config, caps, info->size, 0, 0);
@@ -775,6 +784,8 @@ gst_d3d12_decoder_stop (GstD3D12Decoder * decoder)
 {
   auto priv = decoder->priv;
 
+  GST_DEBUG_OBJECT (decoder, "Stop");
+
   priv->flushing = true;
   if (priv->cmd) {
     gst_d3d12_command_queue_fence_wait (priv->cmd->queue, priv->cmd->fence_val,
@@ -790,6 +801,8 @@ gst_d3d12_decoder_stop (GstD3D12Decoder * decoder)
 
   g_clear_pointer (&priv->output_thread, g_thread_join);
   priv->flushing = false;
+
+  priv->session = nullptr;
 
   return TRUE;
 }
@@ -1247,11 +1260,9 @@ gst_d3d12_decoder_end_picture (GstD3D12Decoder * decoder,
 
   GstD3D12FenceData *fence_data;
   gst_d3d12_fence_data_pool_acquire (priv->fence_data_pool, &fence_data);
-  gst_d3d12_fence_data_add_notify (fence_data,
-      gst_mini_object_ref (decoder_pic),
-      (GDestroyNotify) gst_mini_object_unref);
-  gst_d3d12_fence_data_add_notify (fence_data, gst_ca,
-      (GDestroyNotify) gst_d3d12_command_allocator_unref);
+  gst_d3d12_fence_data_add_notify_mini_object (fence_data,
+      gst_mini_object_ref (decoder_pic));
+  gst_d3d12_fence_data_add_notify_mini_object (fence_data, gst_ca);
 
   gst_d3d12_command_queue_set_notify (priv->cmd->queue, priv->cmd->fence_val,
       fence_data, (GDestroyNotify) gst_d3d12_fence_data_unref);
@@ -1567,7 +1578,8 @@ gst_d3d12_decoder_output_loop (GstD3D12Decoder * self)
           output_data.decoder, output_data.frame, output_data.picture,
           output_data.buffer_flags, output_data.width, output_data.height);
 
-      if (priv->last_flow != GST_FLOW_OK) {
+      if (priv->last_flow != GST_FLOW_FLUSHING &&
+          priv->last_flow != GST_FLOW_OK) {
         GST_WARNING_OBJECT (self, "Last flow was %s",
             gst_flow_get_name (priv->last_flow));
       }

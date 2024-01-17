@@ -226,7 +226,7 @@ GST_START_TEST (test_decoder)
       .chromaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR,
       .lumaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR,
     },
-    .usage = {
+    .usage.decode = {
       .sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_USAGE_INFO_KHR,
       .videoUsageHints = VK_VIDEO_DECODE_USAGE_DEFAULT_KHR,
       .pNext = &profile.codec,
@@ -305,7 +305,8 @@ GST_START_TEST (test_decoder)
     gst_caps_unref (caps);
 
     gst_vulkan_image_buffer_pool_config_set_allocation_params (config, usage,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        VK_IMAGE_LAYOUT_VIDEO_DECODE_DST_KHR, VK_ACCESS_TRANSFER_WRITE_BIT);
     gst_vulkan_image_buffer_pool_config_set_decode_caps (config, profile_caps);
 
     gst_caps_unref (profile_caps);

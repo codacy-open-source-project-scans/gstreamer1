@@ -41,7 +41,7 @@ typedef struct _GstAnalyticsMtd GstAnalyticsMtd;
  *
  * Since: 1.24
  */
-typedef guint32 GstAnalyticsMtdType;
+typedef guintptr GstAnalyticsMtdType;
 
 /**
  * GST_ANALYTICS_MTD_TYPE_ANY:
@@ -56,7 +56,6 @@ typedef guint32 GstAnalyticsMtdType;
 #define GST_ANALYTICS_MTD_CAST(mtd) \
     ((GstAnalyticsMtd *)(mtd))
 
-typedef struct _GstAnalyticsRelatableMtdData GstAnalyticsRelatableMtdData;
 typedef struct _GstAnalyticsRelationMeta GstAnalyticsRelationMeta;
 
 /**
@@ -76,37 +75,27 @@ struct _GstAnalyticsMtd
   GstAnalyticsRelationMeta *meta;
 };
 
-/**
- * GstAnalyticsRelatableMtdData:
- * @analysis_type: Identify the type of analysis-metadata
- * @id: Instance identifier.
- * @size: Size in bytes of the instance
- *
- * Base structure for analysis-metadata that can be placed in relation. Only
- * other analysis-metadata based on GstAnalyticsRelatableMtdData should
- * directly use this structure.
- *
- * Since: 1.24
- */
-struct _GstAnalyticsRelatableMtdData
-{
-  GstAnalyticsMtdType analysis_type;
-  guint id;
-  gsize size;
+typedef struct {
+  const char *name;
 
-  void (*free) (GstAnalyticsRelatableMtdData * mtd_data);
+  gboolean (*mtd_meta_transform) (GstBuffer *transbuf, GstAnalyticsMtd *transmtd,
+                                  GstBuffer *buffer, GQuark type,
+                                  gpointer data);
 
-  gpointer _gst_reserved[GST_PADDING];
-};
+  gpointer _reserved[GST_PADDING_LARGE];
+} GstAnalyticsMtdImpl;
 
 GST_ANALYTICS_META_API
-GstAnalyticsMtdType gst_analytics_mtd_get_type_quark (GstAnalyticsMtd * instance);
+GstAnalyticsMtdType gst_analytics_mtd_get_mtd_type (GstAnalyticsMtd * instance);
 
 GST_ANALYTICS_META_API
 guint gst_analytics_mtd_get_id (GstAnalyticsMtd * instance);
 
 GST_ANALYTICS_META_API
 gsize gst_analytics_mtd_get_size (GstAnalyticsMtd * instance);
+
+GST_ANALYTICS_META_API
+const gchar *gst_analytics_mtd_type_get_name (GstAnalyticsMtdType type);
 
 typedef struct _GstAnalyticsRelationMetaInitParams
     GstAnalyticsRelationMetaInitParams;
@@ -196,9 +185,9 @@ GstAnalyticsRelationMeta *
 gst_buffer_get_analytics_relation_meta (GstBuffer * buffer);
 
 GST_ANALYTICS_META_API
-GstAnalyticsRelatableMtdData *
+gpointer
 gst_analytics_relation_meta_add_mtd (GstAnalyticsRelationMeta * meta,
-    GstAnalyticsMtdType type, gsize size, GstAnalyticsMtd * rlt_mtd);
+    const GstAnalyticsMtdImpl * impl, gsize size, GstAnalyticsMtd * rlt_mtd);
 
 GST_ANALYTICS_META_API
 gboolean
@@ -206,7 +195,7 @@ gst_analytics_relation_meta_get_mtd (GstAnalyticsRelationMeta *
     meta, guint an_meta_id, GstAnalyticsMtdType type, GstAnalyticsMtd * rlt);
 
 GST_ANALYTICS_META_API
-GstAnalyticsRelatableMtdData *
+gpointer
 gst_analytics_relation_meta_get_mtd_data (GstAnalyticsRelationMeta * meta,
     guint an_meta_id);
 

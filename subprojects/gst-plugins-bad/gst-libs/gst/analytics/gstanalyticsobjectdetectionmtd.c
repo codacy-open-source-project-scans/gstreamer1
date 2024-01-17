@@ -24,15 +24,12 @@
 
 #include "gstanalyticsobjectdetectionmtd.h"
 
-#define GST_RELATABLE_MTD_OD_TYPE_NAME "object-detection"
-
-static char type[] = GST_RELATABLE_MTD_OD_TYPE_NAME;
+#include <gst/video/video.h>
 
 typedef struct _GstAnalyticsODMtdData GstAnalyticsODMtdData;
 
 /**
  * GstAnalyticsODMtdData:
- * @parent: parent #GstAnalyticsMtd
  * @object_type: Type of object
  * @x: x component of upper-left corner
  * @y: y component of upper-left corner
@@ -46,7 +43,6 @@ typedef struct _GstAnalyticsODMtdData GstAnalyticsODMtdData;
  */
 struct _GstAnalyticsODMtdData
 {
-  GstAnalyticsRelatableMtdData parent;
   GQuark object_type;
   gint x;
   gint y;
@@ -55,46 +51,56 @@ struct _GstAnalyticsODMtdData
   gfloat location_confidence_lvl;
 };
 
+static gboolean
+gst_analytics_od_mtd_meta_transform (GstBuffer * transbuf,
+    GstAnalyticsMtd * transmtd, GstBuffer * buffer, GQuark type, gpointer data)
+{
+  if (GST_VIDEO_META_TRANSFORM_IS_SCALE (type)) {
+    GstVideoMetaTransform *trans = data;
+    gint ow, oh, nw, nh;
+    GstAnalyticsODMtdData *oddata;
+
+    ow = GST_VIDEO_INFO_WIDTH (trans->in_info);
+    nw = GST_VIDEO_INFO_WIDTH (trans->out_info);
+    oh = GST_VIDEO_INFO_HEIGHT (trans->in_info);
+    nh = GST_VIDEO_INFO_HEIGHT (trans->out_info);
+
+    oddata = gst_analytics_relation_meta_get_mtd_data (transmtd->meta,
+        transmtd->id);
+
+    oddata->x *= nw;
+    oddata->x /= ow;
+
+    oddata->w *= nw;
+    oddata->w /= ow;
+
+    oddata->y *= nh;
+    oddata->y /= oh;
+
+    oddata->h *= nh;
+    oddata->h /= oh;
+  }
+
+  return TRUE;
+}
+
+static const GstAnalyticsMtdImpl od_impl = {
+  "object-detection",
+  gst_analytics_od_mtd_meta_transform
+};
 
 /**
- * gst_analytics_od_mtd_get_type_quark:
- * Get a quark that represent object-detection metadata type
+ * gst_analytics_od_mtd_get_mtd_type:
+ * Get an id that represent object-detection metadata type
  *
- * Returns: Quark of #GstAnalyticsMtd type
+ * Returns: Opaqu id of the #GstAnalyticsMtd type
  *
  * Since: 1.24
  */
 GstAnalyticsMtdType
-gst_analytics_od_mtd_get_type_quark (void)
+gst_analytics_od_mtd_get_mtd_type (void)
 {
-  return g_quark_from_static_string (type);
-}
-
-/**
- * gst_analytics_od_mtd_get_type_name:
- * Get a text representing object-detection metadata type.
- *
- * Returns: #GstAnalyticsMtd type name.
- *
- * Since: 1.24
- */
-const gchar *
-gst_analytics_od_mtd_get_type_name (void)
-{
-  return GST_RELATABLE_MTD_OD_TYPE_NAME;
-}
-
-static GstAnalyticsODMtdData *
-gst_analytics_od_mtd_get_data (GstAnalyticsODMtd * instance)
-{
-  GstAnalyticsRelatableMtdData *rlt_data =
-      gst_analytics_relation_meta_get_mtd_data (instance->meta,
-      instance->id);
-  g_return_val_if_fail (rlt_data, NULL);
-  g_return_val_if_fail (rlt_data->analysis_type ==
-      gst_analytics_od_mtd_get_type_quark (), NULL);
-
-  return (GstAnalyticsODMtdData *) rlt_data;
+  return (GstAnalyticsMtdType) & od_impl;
 }
 
 /**
@@ -117,39 +123,40 @@ gboolean
 gst_analytics_od_mtd_get_location (GstAnalyticsODMtd * instance,
     gint * x, gint * y, gint * w, gint * h, gfloat * loc_conf_lvl)
 {
-  g_return_val_if_fail (instance && x && y && w && h, FALSE);
   GstAnalyticsODMtdData *data;
-  data = gst_analytics_od_mtd_get_data (instance);
+
+  g_return_val_if_fail (instance && x && y && w && h, FALSE);
+  data = gst_analytics_relation_meta_get_mtd_data (instance->meta,
+      instance->id);
   g_return_val_if_fail (data != NULL, FALSE);
 
-  if (data) {
-    *x = data->x;
-    *y = data->y;
-    *w = data->w;
-    *h = data->h;
+  *x = data->x;
+  *y = data->y;
+  *w = data->w;
+  *h = data->h;
 
-    if (loc_conf_lvl) {
-      *loc_conf_lvl = data->location_confidence_lvl;
-    }
-  }
+  if (loc_conf_lvl)
+    *loc_conf_lvl = data->location_confidence_lvl;
 
   return TRUE;
 }
 
 /**
- * gst_analytics_od_mtd_get_type:
+ * gst_analytics_od_mtd_get_obj_type:
  * @handle: Instance handle
+ *
  * Quark of the class of object associated with this location.
+ *
  * Returns: Quark different from on success and 0 on failure.
  *
  * Since: 1.24
  */
 GQuark
-gst_analytics_od_mtd_get_type (GstAnalyticsODMtd * handle)
+gst_analytics_od_mtd_get_obj_type (GstAnalyticsODMtd * handle)
 {
   GstAnalyticsODMtdData *data;
   g_return_val_if_fail (handle != NULL, 0);
-  data = gst_analytics_od_mtd_get_data (handle);
+  data = gst_analytics_relation_meta_get_mtd_data (handle->meta, handle->id);
   g_return_val_if_fail (data != NULL, 0);
   return data->object_type;
 }
@@ -176,10 +183,9 @@ gst_analytics_relation_meta_add_od_mtd (GstAnalyticsRelationMeta *
     gfloat loc_conf_lvl, GstAnalyticsODMtd * od_mtd)
 {
   g_return_val_if_fail (instance != NULL, FALSE);
-  GstAnalyticsMtdType mtd_type = gst_analytics_od_mtd_get_type_quark ();
   gsize size = sizeof (GstAnalyticsODMtdData);
   GstAnalyticsODMtdData *od_mtd_data = (GstAnalyticsODMtdData *)
-      gst_analytics_relation_meta_add_mtd (instance, mtd_type, size, od_mtd);
+      gst_analytics_relation_meta_add_mtd (instance, &od_impl, size, od_mtd);
   if (od_mtd_data) {
     od_mtd_data->x = x;
     od_mtd_data->y = y;
@@ -210,5 +216,5 @@ gst_analytics_relation_meta_get_od_mtd (GstAnalyticsRelationMeta * meta,
     guint an_meta_id, GstAnalyticsODMtd * rlt)
 {
   return gst_analytics_relation_meta_get_mtd (meta, an_meta_id,
-      gst_analytics_od_mtd_get_type_quark (), (GstAnalyticsODMtd *) rlt);
+      gst_analytics_od_mtd_get_mtd_type (), (GstAnalyticsODMtd *) rlt);
 }

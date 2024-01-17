@@ -370,7 +370,8 @@ gst_vulkan_h264_decoder_decide_allocation (GstVideoDecoder * decoder,
   gst_buffer_pool_config_set_params (config, new_caps, size, min, max);
 
   gst_vulkan_image_buffer_pool_config_set_allocation_params (config, usage,
-      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_IMAGE_LAYOUT_VIDEO_DECODE_DST_KHR,
+      VK_ACCESS_TRANSFER_WRITE_BIT);
   gst_vulkan_image_buffer_pool_config_set_decode_caps (config, profile_caps);
 
   gst_caps_unref (profile_caps);
@@ -540,7 +541,7 @@ gst_vulkan_video_profile_from_h264_sps (GstVulkanVideoProfile * profile,
       .lumaBitDepth = _get_component_bit_depth (sps->bit_depth_luma_minus8 + 8),
       .chromaBitDepth = _get_component_bit_depth (sps->bit_depth_chroma_minus8 + 8),
     },
-    .usage = {
+    .usage.decode = {
       .sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_USAGE_INFO_KHR,
       .videoUsageHints = VK_VIDEO_DECODE_USAGE_DEFAULT_KHR,
       .pNext = &profile->codec,
