@@ -23,6 +23,7 @@
 
 #include "gstd3d12.h"
 #include "gstd3d12memory-private.h"
+#include "gstd3d12-private.h"
 #include <directx/d3dx12.h>
 #include <string.h>
 #include <wrl.h>
@@ -223,6 +224,7 @@ struct _GstD3D12MemoryPrivate
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout[GST_VIDEO_MAX_PLANES];
   guint64 size;
   guint num_subresources;
+  D3D12_RECT subresource_rect[GST_VIDEO_MAX_PLANES];
   guint subresource_index[GST_VIDEO_MAX_PLANES];
   DXGI_FORMAT resource_formats[GST_VIDEO_MAX_PLANES];
   guint srv_inc_size;
@@ -501,6 +503,21 @@ gst_d3d12_memory_get_plane_count (GstD3D12Memory * mem)
 }
 
 gboolean
+gst_d3d12_memory_get_plane_rectangle (GstD3D12Memory * mem, guint plane,
+    D3D12_RECT * rect)
+{
+  g_return_val_if_fail (gst_is_d3d12_memory (GST_MEMORY_CAST (mem)), FALSE);
+  g_return_val_if_fail (rect, FALSE);
+
+  if (plane >= mem->priv->num_subresources)
+    return FALSE;
+
+  *rect = mem->priv->subresource_rect[plane];
+
+  return TRUE;
+}
+
+gboolean
 gst_d3d12_memory_get_shader_resource_view_heap (GstD3D12Memory * mem,
     ID3D12DescriptorHeap ** heap)
 {
@@ -717,7 +734,7 @@ gst_d3d12_allocator_alloc_wrapped (GstD3D12Allocator * allocator,
   mem->device = (GstD3D12Device *) gst_object_ref (device);
 
   mem->priv->size = 0;
-  for (guint i = 0; i < mem->priv->num_subresources; i++) {
+  for (guint i = 0; i < num_subresources; i++) {
     UINT64 size;
 
     /* One notable difference between D3D12/D3D11 is that, D3D12 introduced
@@ -743,6 +760,30 @@ gst_d3d12_allocator_alloc_wrapped (GstD3D12Allocator * allocator,
     /* Update offset manually */
     priv->layout[i].Offset = priv->size;
     priv->size += size;
+  }
+
+  priv->subresource_rect[0].left = 0;
+  priv->subresource_rect[0].top = 0;
+  priv->subresource_rect[0].right = (LONG) desc.Width;
+  priv->subresource_rect[0].bottom = (LONG) desc.Height;
+
+  for (guint i = 1; i < num_subresources; i++) {
+    priv->subresource_rect[i].left = 0;
+    priv->subresource_rect[i].top = 0;
+    switch (desc.Format) {
+      case DXGI_FORMAT_NV12:
+      case DXGI_FORMAT_P010:
+      case DXGI_FORMAT_P016:
+        priv->subresource_rect[i].right = (LONG) desc.Width / 2;
+        priv->subresource_rect[i].bottom = (LONG) desc.Height / 2;
+        break;
+      default:
+        GST_WARNING_OBJECT (allocator, "Unexpected multi-plane format %d",
+            desc.Format);
+        priv->subresource_rect[i].right = (LONG) desc.Width / 2;
+        priv->subresource_rect[i].bottom = (LONG) desc.Height / 2;
+        break;
+    }
   }
 
   gst_memory_init (GST_MEMORY_CAST (mem),
@@ -774,7 +815,20 @@ gst_d3d12_allocator_alloc_internal (GstD3D12Allocator * self,
     return nullptr;
   }
 
-  return gst_d3d12_allocator_alloc_wrapped (self, device, resource.Get (), 0);
+  auto mem =
+      gst_d3d12_allocator_alloc_wrapped (self, device, resource.Get (), 0);
+  if (!mem)
+    return nullptr;
+
+  /* Initialize YUV texture with black color */
+  if (desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+      (desc->Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0 &&
+      (heap_flags & D3D12_HEAP_FLAG_CREATE_NOT_ZEROED) == 0 &&
+      desc->DepthOrArraySize == 1) {
+    gst_d3d12_device_clear_yuv_texture (device, mem);
+  }
+
+  return mem;
 }
 
 GstMemory *
