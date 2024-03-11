@@ -5122,6 +5122,8 @@ _set_internal_rtpbin_element_props_from_stream (GstWebRTCBin * webrtc,
 
     GST_LOG_OBJECT (stream, "setting rtx mapping: %s -> %u", apt, rtx_pt[i]);
     gst_structure_set (pt_map, apt, G_TYPE_UINT, rtx_pt[i], NULL);
+
+    gst_caps_unref (rtx_caps);
   }
 
   GST_DEBUG_OBJECT (stream, "setting payload map on %" GST_PTR_FORMAT " : %"
@@ -5620,6 +5622,9 @@ _update_transport_ptmap_from_media (GstWebRTCBin * webrtc,
   guint i, len;
   const gchar *proto;
   const GstSDPMedia *media = gst_sdp_message_get_media (sdp, media_idx);
+  const GstSDPMedia *remote_media =
+      gst_sdp_message_get_media (webrtc->current_remote_description->sdp,
+      media_idx);
 
   /* get proto */
   proto = gst_sdp_media_get_proto (media);
@@ -5671,6 +5676,11 @@ _update_transport_ptmap_from_media (GstWebRTCBin * webrtc,
             (GstStructureForeachFunc) _filter_sdp_fields, filtered);
         gst_caps_append_structure (item.caps, filtered);
       }
+
+      /* Get attributes from the remote media,
+       * such as ssrc-...-cname, ...
+       */
+      gst_sdp_media_attributes_to_caps (remote_media, item.caps);
 
       item.pt = pt;
       item.media_idx = media_idx;
@@ -7438,8 +7448,7 @@ on_rtpbin_request_pt_map (GstElement * rtpbin, guint session_id, guint pt,
   if (!stream)
     goto unknown_session;
 
-  if ((ret = transport_stream_get_caps_for_pt (stream, pt)))
-    gst_caps_ref (ret);
+  ret = transport_stream_get_caps_for_pt (stream, pt);
 
   GST_DEBUG_OBJECT (webrtc, "Found caps %" GST_PTR_FORMAT " for pt %d in "
       "session %d", ret, pt, session_id);
