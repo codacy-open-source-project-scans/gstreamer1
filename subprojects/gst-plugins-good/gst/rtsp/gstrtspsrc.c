@@ -1279,9 +1279,9 @@ gst_rtspsrc_class_init (GstRTSPSrcClass * klass)
    */
   gst_rtspsrc_signals[SIGNAL_PUSH_BACKCHANNEL_SAMPLE] =
       g_signal_new ("push-backchannel-sample", G_TYPE_FROM_CLASS (klass),
-      G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION | G_SIGNAL_DEPRECATED,
-      G_STRUCT_OFFSET (GstRTSPSrcClass, push_backchannel_sample), NULL, NULL,
-      NULL, GST_TYPE_FLOW_RETURN, 2, G_TYPE_UINT, GST_TYPE_SAMPLE);
+      G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION, G_STRUCT_OFFSET (GstRTSPSrcClass,
+          push_backchannel_sample), NULL, NULL, NULL,
+      GST_TYPE_FLOW_RETURN, 2, G_TYPE_UINT, GST_TYPE_SAMPLE);
 
   /**
    * GstRTSPSrc::get-parameter:
@@ -8630,9 +8630,8 @@ close:
   }
 
   /* cleanup */
-  gst_rtspsrc_cleanup (src);
-
   src->state = GST_RTSP_STATE_INVALID;
+  gst_rtspsrc_cleanup (src);
 
   if (async)
     gst_rtspsrc_loop_end_cmd (src, CMD_CLOSE, res);
@@ -9556,8 +9555,10 @@ gst_rtspsrc_stop (GstRTSPSrc * src)
 
   GST_DEBUG_OBJECT (src, "stopping");
 
-  /* also cancels pending task */
-  gst_rtspsrc_loop_send_cmd (src, CMD_WAIT, CMD_ALL);
+  /* If we've already started cleanup, we only need to stop the task */
+  if (src->state != GST_RTSP_STATE_INVALID)
+    /* also cancels pending task */
+    gst_rtspsrc_loop_send_cmd (src, CMD_WAIT, CMD_ALL);
 
   GST_OBJECT_LOCK (src);
   if ((task = src->task)) {
@@ -9580,8 +9581,10 @@ gst_rtspsrc_stop (GstRTSPSrc * src)
   }
   GST_OBJECT_UNLOCK (src);
 
-  /* ensure synchronously all is closed and clean */
-  gst_rtspsrc_close (src, FALSE, TRUE);
+  /* ensure synchronously all is closed and clean if we haven't started
+   * cleanup yet */
+  if (src->state != GST_RTSP_STATE_INVALID)
+    gst_rtspsrc_close (src, FALSE, TRUE);
 
   return TRUE;
 }
