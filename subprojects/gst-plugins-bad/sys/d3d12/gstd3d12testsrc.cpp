@@ -46,11 +46,7 @@
 #include <memory>
 #include <vector>
 #include <queue>
-#include "PSMain_checker.h"
-#include "PSMain_color.h"
-#include "PSMain_snow.h"
-#include "VSMain_color.h"
-#include "VSMain_coord.h"
+#include <gst/d3dshader/gstd3dshader.h>
 
 /* *INDENT-OFF* */
 using namespace Microsoft::WRL;
@@ -232,7 +228,8 @@ struct RenderContext
   {
     event_handle = CreateEventEx (nullptr, nullptr, 0, EVENT_ALL_ACCESS);
     device = (GstD3D12Device *) gst_object_ref (dev);
-    ca_pool = gst_d3d12_command_allocator_pool_new (device,
+    auto device_handle = gst_d3d12_device_get_device_handle (device);
+    ca_pool = gst_d3d12_command_allocator_pool_new (device_handle,
         D3D12_COMMAND_LIST_TYPE_DIRECT);
   }
 
@@ -416,6 +413,20 @@ setup_snow_render (GstD3D12TestSrc * self, RenderContext * ctx,
     return FALSE;
   }
 
+  GstD3DShaderByteCode vs_code;
+  GstD3DShaderByteCode ps_code;
+  if (!gst_d3d_plugin_shader_get_vs_blob (GST_D3D_PLUGIN_VS_COORD,
+          GST_D3D_SM_5_0, &vs_code)) {
+    GST_ERROR_OBJECT (self, "Couldn't get vs bytecode");
+    return FALSE;
+  }
+
+  if (!gst_d3d_plugin_shader_get_ps_blob (GST_D3D_PLUGIN_PS_SNOW,
+          GST_D3D_SM_5_0, &ps_code)) {
+    GST_ERROR_OBJECT (self, "Couldn't get ps bytecode");
+    return FALSE;
+  }
+
   D3D12_INPUT_ELEMENT_DESC input_desc[2];
   input_desc[0].SemanticName = "POSITION";
   input_desc[0].SemanticIndex = 0;
@@ -435,10 +446,10 @@ setup_snow_render (GstD3D12TestSrc * self, RenderContext * ctx,
 
   D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = { };
   pso_desc.pRootSignature = rs.Get ();
-  pso_desc.VS.BytecodeLength = sizeof (g_VSMain_coord);
-  pso_desc.VS.pShaderBytecode = g_VSMain_coord;
-  pso_desc.PS.BytecodeLength = sizeof (g_PSMain_snow);
-  pso_desc.PS.pShaderBytecode = g_PSMain_snow;
+  pso_desc.VS.BytecodeLength = vs_code.byte_code_len;
+  pso_desc.VS.pShaderBytecode = vs_code.byte_code;
+  pso_desc.PS.BytecodeLength = ps_code.byte_code_len;
+  pso_desc.PS.pShaderBytecode = ps_code.byte_code;
   pso_desc.BlendState = CD3DX12_BLEND_DESC (D3D12_DEFAULT);
   pso_desc.SampleMask = UINT_MAX;
   pso_desc.RasterizerState = CD3DX12_RASTERIZER_DESC (D3D12_DEFAULT);
@@ -626,6 +637,20 @@ setup_smpte_render (GstD3D12TestSrc * self, RenderContext * ctx)
     return FALSE;
   }
 
+  GstD3DShaderByteCode vs_code;
+  GstD3DShaderByteCode ps_code;
+  if (!gst_d3d_plugin_shader_get_vs_blob (GST_D3D_PLUGIN_VS_COLOR,
+          GST_D3D_SM_5_0, &vs_code)) {
+    GST_ERROR_OBJECT (self, "Couldn't get vs bytecode");
+    return FALSE;
+  }
+
+  if (!gst_d3d_plugin_shader_get_ps_blob (GST_D3D_PLUGIN_PS_COLOR,
+          GST_D3D_SM_5_0, &ps_code)) {
+    GST_ERROR_OBJECT (self, "Couldn't get ps bytecode");
+    return FALSE;
+  }
+
   D3D12_INPUT_ELEMENT_DESC input_desc[2];
   input_desc[0].SemanticName = "POSITION";
   input_desc[0].SemanticIndex = 0;
@@ -645,10 +670,10 @@ setup_smpte_render (GstD3D12TestSrc * self, RenderContext * ctx)
 
   D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = { };
   pso_desc.pRootSignature = rs.Get ();
-  pso_desc.VS.BytecodeLength = sizeof (g_VSMain_color);
-  pso_desc.VS.pShaderBytecode = g_VSMain_color;
-  pso_desc.PS.BytecodeLength = sizeof (g_PSMain_color);
-  pso_desc.PS.pShaderBytecode = g_PSMain_color;
+  pso_desc.VS.BytecodeLength = vs_code.byte_code_len;
+  pso_desc.VS.pShaderBytecode = vs_code.byte_code;
+  pso_desc.PS.BytecodeLength = ps_code.byte_code_len;
+  pso_desc.PS.pShaderBytecode = ps_code.byte_code;
   pso_desc.BlendState = CD3DX12_BLEND_DESC (D3D12_DEFAULT);
   pso_desc.SampleMask = UINT_MAX;
   pso_desc.RasterizerState = CD3DX12_RASTERIZER_DESC (D3D12_DEFAULT);
@@ -1003,6 +1028,20 @@ setup_checker_render (GstD3D12TestSrc * self, RenderContext * ctx,
     return FALSE;
   }
 
+  GstD3DShaderByteCode vs_code;
+  GstD3DShaderByteCode ps_code;
+  if (!gst_d3d_plugin_shader_get_vs_blob (GST_D3D_PLUGIN_VS_COORD,
+          GST_D3D_SM_5_0, &vs_code)) {
+    GST_ERROR_OBJECT (self, "Couldn't get vs bytecode");
+    return FALSE;
+  }
+
+  if (!gst_d3d_plugin_shader_get_ps_blob (GST_D3D_PLUGIN_PS_CHECKER,
+          GST_D3D_SM_5_0, &ps_code)) {
+    GST_ERROR_OBJECT (self, "Couldn't get ps bytecode");
+    return FALSE;
+  }
+
   D3D12_INPUT_ELEMENT_DESC input_desc[2];
   input_desc[0].SemanticName = "POSITION";
   input_desc[0].SemanticIndex = 0;
@@ -1022,10 +1061,10 @@ setup_checker_render (GstD3D12TestSrc * self, RenderContext * ctx,
 
   D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = { };
   pso_desc.pRootSignature = rs.Get ();
-  pso_desc.VS.BytecodeLength = sizeof (g_VSMain_coord);
-  pso_desc.VS.pShaderBytecode = g_VSMain_coord;
-  pso_desc.PS.BytecodeLength = sizeof (g_PSMain_checker);
-  pso_desc.PS.pShaderBytecode = g_PSMain_checker;
+  pso_desc.VS.BytecodeLength = vs_code.byte_code_len;
+  pso_desc.VS.pShaderBytecode = vs_code.byte_code;
+  pso_desc.PS.BytecodeLength = ps_code.byte_code_len;
+  pso_desc.PS.pShaderBytecode = ps_code.byte_code;
   pso_desc.BlendState = CD3DX12_BLEND_DESC (D3D12_DEFAULT);
   pso_desc.SampleMask = UINT_MAX;
   pso_desc.RasterizerState = CD3DX12_RASTERIZER_DESC (D3D12_DEFAULT);
@@ -1586,7 +1625,7 @@ gst_d3d12_test_src_setup_context (GstD3D12TestSrc * self, GstCaps * caps)
   }
 
   auto mem = gst_d3d12_allocator_alloc_wrapped (nullptr, self->device,
-      ctx->texture.Get (), 0);
+      ctx->texture.Get (), 0, nullptr, nullptr);
   if (!mem) {
     GST_ERROR_OBJECT (self, "Couldn't wrap texture");
     return FALSE;
@@ -1609,7 +1648,7 @@ gst_d3d12_test_src_setup_context (GstD3D12TestSrc * self, GstCaps * caps)
     auto params = gst_d3d12_allocation_params_new (self->device, &priv->info,
         GST_D3D12_ALLOCATION_FLAG_DEFAULT,
         D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
-        D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
+        D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS, D3D12_HEAP_FLAG_NONE);
     gst_buffer_pool_config_set_d3d12_allocation_params (config, params);
     gst_d3d12_allocation_params_free (params);
 
@@ -1800,7 +1839,8 @@ gst_d3d12_test_src_decide_allocation (GstBaseSrc * bsrc, GstQuery * query)
     auto params = gst_buffer_pool_config_get_d3d12_allocation_params (config);
     if (!params) {
       params = gst_d3d12_allocation_params_new (self->device, &vinfo,
-          GST_D3D12_ALLOCATION_FLAG_DEFAULT, resource_flags);
+          GST_D3D12_ALLOCATION_FLAG_DEFAULT, resource_flags,
+          D3D12_HEAP_FLAG_NONE);
     } else {
       gst_d3d12_allocation_params_set_resource_flags (params, resource_flags);
       gst_d3d12_allocation_params_unset_resource_flags (params,
@@ -2022,20 +2062,18 @@ gst_d3d12_test_src_draw_pattern (GstD3D12TestSrc * self, GstClockTime pts,
 
   if (ctx->static_color[0].is_valid) {
     if (ctx->static_color[1].is_valid && (priv->n_frames % 2) == 1) {
-      cl->ClearRenderTargetView (ctx->
-          rtv_heap->GetCPUDescriptorHandleForHeapStart (),
-          ctx->static_color[1].value.color, 0, nullptr);
+      cl->ClearRenderTargetView (GetCPUDescriptorHandleForHeapStart
+          (ctx->rtv_heap), ctx->static_color[1].value.color, 0, nullptr);
     } else {
-      cl->ClearRenderTargetView (ctx->
-          rtv_heap->GetCPUDescriptorHandleForHeapStart (),
-          ctx->static_color[0].value.color, 0, nullptr);
+      cl->ClearRenderTargetView (GetCPUDescriptorHandleForHeapStart
+          (ctx->rtv_heap), ctx->static_color[0].value.color, 0, nullptr);
     }
   } else {
     cl->IASetPrimitiveTopology (D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cl->RSSetViewports (1, &ctx->viewport);
     cl->RSSetScissorRects (1, &ctx->scissor_rect);
     D3D12_CPU_DESCRIPTOR_HANDLE rtv_heaps[] = {
-      priv->ctx->rtv_heap->GetCPUDescriptorHandleForHeapStart ()
+      GetCPUDescriptorHandleForHeapStart (priv->ctx->rtv_heap)
     };
     cl->OMSetRenderTargets (1, rtv_heaps, FALSE, nullptr);
 

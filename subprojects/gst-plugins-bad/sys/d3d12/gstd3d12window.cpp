@@ -89,14 +89,15 @@ struct DeviceContext
     queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
 
-    queue = gst_d3d12_command_queue_new (device,
-        &queue_desc, BACK_BUFFER_COUNT * 2);
+    auto device_handle = gst_d3d12_device_get_device_handle (device);
+    queue = gst_d3d12_command_queue_new (device_handle,
+        &queue_desc, D3D12_FENCE_FLAG_NONE, BACK_BUFFER_COUNT * 2);
     if (!queue) {
       GST_ERROR_OBJECT (device, "Couldn't create command queue");
       return;
     }
 
-    ca_pool = gst_d3d12_command_allocator_pool_new (device,
+    ca_pool = gst_d3d12_command_allocator_pool_new (device_handle,
         D3D12_COMMAND_LIST_TYPE_DIRECT);
     if (!ca_pool) {
       GST_ERROR_OBJECT (device, "Couldn't create command allocator pool");
@@ -1102,10 +1103,10 @@ gst_d3d12_window_on_resize (GstD3D12Window * self)
     }
 
     if (i == 0)
-      priv->ctx->buffer_desc = backbuf->GetDesc ();
+      priv->ctx->buffer_desc = GetDesc (backbuf);
 
     auto mem = gst_d3d12_allocator_alloc_wrapped (nullptr, self->device,
-        backbuf.Get (), 0);
+        backbuf.Get (), 0, nullptr, nullptr);
     auto buf = gst_buffer_new ();
     gst_buffer_append_memory (buf, mem);
     priv->ctx->swap_buffers.push_back (std::make_shared < SwapBuffer > (buf));
@@ -1167,7 +1168,7 @@ gst_d3d12_window_on_resize (GstD3D12Window * self)
     }
 
     auto mem = gst_d3d12_allocator_alloc_wrapped (nullptr, self->device,
-        msaa_texture.Get (), 0);
+        msaa_texture.Get (), 0, nullptr, nullptr);
     priv->ctx->msaa_buf = gst_buffer_new ();
     gst_buffer_append_memory (priv->ctx->msaa_buf, mem);
   }

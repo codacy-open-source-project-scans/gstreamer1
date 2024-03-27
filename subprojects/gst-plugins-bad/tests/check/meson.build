@@ -97,6 +97,7 @@ base_tests = [
   [['libs/h265bitwriter.c'], false, [gstcodecparsers_dep]],
   [['libs/vkformat.c'], not gstvulkan_dep.found(), [gstvulkan_dep]],
   [['libs/av1bitwriter.c'], false, [gstcodecparsers_dep]],
+  [['libs/vp9bitwriter.c'], false, [gstcodecparsers_dep]],
   [['libs/vkmemory.c'], not gstvulkan_dep.found(), [gstvulkan_dep]],
   [['libs/analyticsmeta.c'], false, [gstanalytics_dep]],
   [['elements/vkcolorconvert.c'], not gstvulkan_dep.found(), [gstvulkan_dep]],
@@ -112,6 +113,13 @@ base_tests = [
   [['libs/d3d11memory.c'], not gstd3d11_dep.found(), [gstd3d11_dep]],
   [['libs/cudamemory.c'], not gstcuda_dep.found(), [gstcuda_dep, gstcuda_stub_dep]],
 ]
+
+# Make sure our headers are C++ clean
+if add_languages('cpp', native: false, required: false)
+  base_tests += [
+    [['libs/gstlibscpp.cc'], false ],
+  ]
+endif
 
 # FIXME: unistd dependency, unstable or not tested yet on windows
 if host_machine.system() != 'windows'

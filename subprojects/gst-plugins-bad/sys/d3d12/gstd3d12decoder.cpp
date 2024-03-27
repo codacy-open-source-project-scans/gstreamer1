@@ -27,6 +27,7 @@
 #include <wrl.h>
 #include <string.h>
 #include <mutex>
+#include <condition_variable>
 #include <set>
 #include <vector>
 #include <queue>
@@ -442,13 +443,14 @@ gst_d3d12_decoder_open (GstD3D12Decoder * decoder, GstElement * element)
   D3D12_COMMAND_QUEUE_DESC desc = { };
   desc.Type = D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE;
   desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-  cmd->queue = gst_d3d12_command_queue_new (decoder->device, &desc, 4);
+  cmd->queue = gst_d3d12_command_queue_new (cmd->device.Get (), &desc,
+      D3D12_FENCE_FLAG_NONE, 4);
   if (!cmd->queue) {
     GST_ERROR_OBJECT (element, "Couldn't create command queue");
     return FALSE;
   }
 
-  cmd->ca_pool = gst_d3d12_command_allocator_pool_new (decoder->device,
+  cmd->ca_pool = gst_d3d12_command_allocator_pool_new (cmd->device.Get (),
       D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE);
 
   priv->cmd = std::move (cmd);
@@ -721,10 +723,9 @@ gst_d3d12_decoder_configure (GstD3D12Decoder * decoder,
   align.padding_bottom = session->aligned_height - info->height;
 
   auto params = gst_d3d12_allocation_params_new (decoder->device, info,
-      GST_D3D12_ALLOCATION_FLAG_DEFAULT, resource_flags);
-  gst_d3d12_allocation_params_alignment (params, &align);
-  gst_d3d12_allocation_params_set_heap_flags (params,
+      GST_D3D12_ALLOCATION_FLAG_DEFAULT, resource_flags,
       D3D12_HEAP_FLAG_CREATE_NOT_ZEROED);
+  gst_d3d12_allocation_params_alignment (params, &align);
   if (!session->array_of_textures)
     gst_d3d12_allocation_params_set_array_size (params, session->dpb_size);
 
@@ -754,10 +755,9 @@ gst_d3d12_decoder_configure (GstD3D12Decoder * decoder,
 
     params = gst_d3d12_allocation_params_new (decoder->device, info,
         GST_D3D12_ALLOCATION_FLAG_DEFAULT,
-        D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
-    gst_d3d12_allocation_params_alignment (params, &align);
-    gst_d3d12_allocation_params_set_heap_flags (params,
+        D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS,
         D3D12_HEAP_FLAG_CREATE_NOT_ZEROED);
+    gst_d3d12_allocation_params_alignment (params, &align);
     gst_buffer_pool_config_set_d3d12_allocation_params (config, params);
     gst_d3d12_allocation_params_free (params);
     gst_buffer_pool_config_set_params (config, caps, info->size, 0, 0);
@@ -1827,7 +1827,7 @@ gst_d3d12_decoder_decide_allocation (GstD3D12Decoder * decoder,
     if (!params) {
       params = gst_d3d12_allocation_params_new (decoder->device, &vinfo,
           GST_D3D12_ALLOCATION_FLAG_DEFAULT,
-          D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
+          D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS, D3D12_HEAP_FLAG_NONE);
     } else {
       gst_d3d12_allocation_params_set_resource_flags (params,
           D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);

@@ -53,6 +53,13 @@ struct GCData
 
 typedef std::shared_ptr<GCData> GCDataPtr;
 
+struct gc_cmp {
+  bool operator()(const GCDataPtr &a, const GCDataPtr &b)
+  {
+    return a->fence_val > b->fence_val;
+  }
+};
+
 struct GstD3D12CommandQueuePrivate
 {
   GstD3D12CommandQueuePrivate ()
@@ -79,13 +86,6 @@ struct GstD3D12CommandQueuePrivate
 
     CloseHandle (event_handle);
   }
-
-  struct gc_cmp {
-    bool operator()(const GCDataPtr &a, const GCDataPtr &b)
-    {
-      return a->fence_val > b->fence_val;
-    }
-  };
 
   D3D12_COMMAND_QUEUE_DESC desc;
 
@@ -124,9 +124,6 @@ gst_d3d12_command_queue_class_init (GstD3D12CommandQueueClass * klass)
   auto object_class = G_OBJECT_CLASS (klass);
 
   object_class->finalize = gst_d3d12_command_queue_finalize;
-
-  GST_DEBUG_CATEGORY_INIT (gst_d3d12_command_queue_debug,
-      "d3d12commandqueue", 0, "d3d12commandqueue");
 }
 
 static void
@@ -146,26 +143,29 @@ gst_d3d12_command_queue_finalize (GObject * object)
 }
 
 GstD3D12CommandQueue *
-gst_d3d12_command_queue_new (GstD3D12Device * device,
-    const D3D12_COMMAND_QUEUE_DESC * desc, guint queue_size)
+gst_d3d12_command_queue_new (ID3D12Device * device,
+    const D3D12_COMMAND_QUEUE_DESC * desc, D3D12_FENCE_FLAGS fence_flags,
+    guint queue_size)
 {
-  g_return_val_if_fail (GST_IS_D3D12_DEVICE (device), nullptr);
+  g_return_val_if_fail (device, nullptr);
   g_return_val_if_fail (desc, nullptr);
 
-  auto device_handle = gst_d3d12_device_get_device_handle (device);
+  GST_D3D12_CALL_ONCE_BEGIN {
+    GST_DEBUG_CATEGORY_INIT (gst_d3d12_command_queue_debug,
+        "d3d12commandqueue", 0, "d3d12commandqueue");
+  } GST_D3D12_CALL_ONCE_END;
 
   ComPtr < ID3D12CommandQueue > cq;
-  auto hr = device_handle->CreateCommandQueue (desc, IID_PPV_ARGS (&cq));
-  if (!gst_d3d12_result (hr, device)) {
-    GST_ERROR_OBJECT (device, "Couldn't create command queue");
+  auto hr = device->CreateCommandQueue (desc, IID_PPV_ARGS (&cq));
+  if (FAILED (hr)) {
+    GST_ERROR ("Couldn't create command queue, hr: 0x%x", (guint) hr);
     return nullptr;
   }
 
   ComPtr < ID3D12Fence > fence;
-  hr = device_handle->CreateFence (0,
-      D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS (&fence));
-  if (!gst_d3d12_result (hr, device)) {
-    GST_ERROR_OBJECT (device, "Couldn't create fence");
+  hr = device->CreateFence (0, fence_flags, IID_PPV_ARGS (&fence));
+  if (FAILED (hr)) {
+    GST_ERROR ("Couldn't create fence, hr: 0x%x", (guint) hr);
     return nullptr;
   }
 
@@ -174,7 +174,7 @@ gst_d3d12_command_queue_new (GstD3D12Device * device,
   gst_object_ref_sink (self);
 
   auto priv = self->priv;
-  priv->device = gst_d3d12_device_get_device_handle (device);
+  priv->device = device;
   priv->cq = cq;
   priv->fence = fence;
   priv->queue_size = queue_size;
@@ -224,7 +224,8 @@ gst_d3d12_command_queue_execute_command_lists (GstD3D12CommandQueue * queue,
 
   std::lock_guard < std::mutex > lk (priv->execute_lock);
   priv->fence_val++;
-  priv->cq->ExecuteCommandLists (num_command_lists, command_lists);
+  if (num_command_lists)
+    priv->cq->ExecuteCommandLists (num_command_lists, command_lists);
   hr = priv->cq->Signal (priv->fence.Get (), priv->fence_val);
   if (FAILED (hr)) {
     GST_ERROR_OBJECT (queue, "Signal failed");
@@ -383,27 +384,59 @@ gst_d3d12_command_queue_set_notify (GstD3D12CommandQueue * queue,
 
   auto priv = queue->priv;
 
-  auto completed = priv->fence->GetCompletedValue ();
-  if (completed >= fence_value) {
-    GST_DEBUG_OBJECT (queue, "Already completed fence value %"
-        G_GUINT64_FORMAT, fence_value);
-
-    if (notify)
-      notify (fence_data);
-    return;
-  }
-
+  std::lock_guard < std::mutex > elk (priv->execute_lock);
   auto gc_data = std::make_shared < GCData > (fence_data, notify, fence_value);
-
-  std::lock_guard < std::mutex > lk (priv->lock);
   if (!priv->gc_thread) {
-    gst_d3d12_init_background_thread ();
     priv->gc_thread = g_thread_new ("GstD3D12Gc",
         (GThreadFunc) gst_d3d12_command_queue_gc_thread, queue);
   }
 
   GST_LOG_OBJECT (queue, "Pushing GC data %" G_GUINT64_FORMAT, fence_value);
 
+  std::lock_guard < std::mutex > lk (priv->lock);
   priv->gc_list.push (std::move (gc_data));
   priv->cond.notify_one ();
+}
+
+HRESULT
+gst_d3d12_command_queue_drain (GstD3D12CommandQueue * queue)
+{
+  g_return_val_if_fail (GST_IS_D3D12_COMMAND_QUEUE (queue), E_INVALIDARG);
+
+  auto priv = queue->priv;
+
+  std::priority_queue < GCDataPtr, std::vector < GCDataPtr >, gc_cmp > gc_list;
+
+  {
+    std::lock_guard < std::mutex > elk (priv->execute_lock);
+    priv->fence_val++;
+    auto hr = priv->cq->Signal (priv->fence.Get (), priv->fence_val);
+    if (FAILED (hr)) {
+      GST_ERROR_OBJECT (queue, "Signal failed");
+      priv->fence_val--;
+      return hr;
+    }
+
+    auto completed = priv->fence->GetCompletedValue ();
+    if (completed < priv->fence_val) {
+      auto event_handle = CreateEventEx (nullptr, nullptr, 0, EVENT_ALL_ACCESS);
+      hr = priv->fence->SetEventOnCompletion (priv->fence_val, event_handle);
+      if (FAILED (hr)) {
+        GST_ERROR_OBJECT (queue, "SetEventOnCompletion failed");
+        CloseHandle (event_handle);
+        return hr;
+      }
+
+      WaitForSingleObjectEx (event_handle, INFINITE, FALSE);
+      CloseHandle (event_handle);
+    }
+
+    {
+      std::lock_guard < std::mutex > lk (priv->lock);
+      gc_list = priv->gc_list;
+      priv->gc_list = { };
+    }
+  }
+
+  return S_OK;
 }

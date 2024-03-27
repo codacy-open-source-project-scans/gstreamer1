@@ -143,8 +143,6 @@ struct GstD3D12EncoderPrivate
 /* *INDENT-ON* */
 
 static void gst_d3d12_encoder_finalize (GObject * object);
-static void gst_d3d12_encoder_set_property (GObject * object, guint prop_id,
-    const GValue * value, GParamSpec * pspec);
 static void gst_d3d12_encoder_get_property (GObject * object, guint prop_id,
     GValue * value, GParamSpec * pspec);
 
@@ -304,14 +302,14 @@ gst_d3d12_encoder_open (GstVideoEncoder * encoder)
   queue_desc.Type = D3D12_COMMAND_LIST_TYPE_VIDEO_ENCODE;
 
   auto cmd = std::make_unique < EncoderCmdData > ();
-  cmd->queue = gst_d3d12_command_queue_new (self->device,
-      &queue_desc, ASYNC_DEPTH);
+  cmd->queue = gst_d3d12_command_queue_new (device, &queue_desc,
+      D3D12_FENCE_FLAG_NONE, ASYNC_DEPTH);
   if (!cmd->queue) {
     GST_ERROR_OBJECT (self, "Couldn't create command queue");
     return FALSE;
   }
 
-  cmd->ca_pool = gst_d3d12_command_allocator_pool_new (self->device,
+  cmd->ca_pool = gst_d3d12_command_allocator_pool_new (device,
       D3D12_COMMAND_LIST_TYPE_VIDEO_ENCODE);
   cmd->video_device = video_device;
 
@@ -455,7 +453,7 @@ gst_d3d12_encoder_create_upload_pool (GstD3D12Encoder * self)
   auto params = gst_d3d12_allocation_params_new (self->device, &info,
       GST_D3D12_ALLOCATION_FLAG_DEFAULT,
       D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS |
-      D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+      D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_HEAP_FLAG_NONE);
   gst_buffer_pool_config_set_d3d12_allocation_params (config, params);
   gst_d3d12_allocation_params_free (params);
   gst_buffer_pool_config_set_params (config, caps, info.size, 0, 0);
@@ -524,7 +522,7 @@ gst_d3d12_encoder_propose_allocation (GstVideoEncoder * encoder,
     auto params = gst_d3d12_allocation_params_new (self->device, &info,
         GST_D3D12_ALLOCATION_FLAG_DEFAULT,
         D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS |
-        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_HEAP_FLAG_NONE);
     gst_d3d12_allocation_params_alignment (params, &align);
     gst_buffer_pool_config_set_d3d12_allocation_params (config, params);
     gst_d3d12_allocation_params_free (params);
@@ -715,7 +713,7 @@ gst_d3d12_encoder_upload_frame (GstD3D12Encoder * self, GstBuffer * buffer)
       gst_memory_unmap (mem, &map_info);
 
       auto resource = gst_d3d12_memory_get_resource_handle (dmem);
-      auto desc = resource->GetDesc ();
+      auto desc = GetDesc (resource);
       if (desc.Width >= (UINT64) priv->config.resolution.Width &&
           desc.Height >= priv->config.resolution.Height) {
         return gst_buffer_ref (buffer);
@@ -739,7 +737,7 @@ gst_d3d12_encoder_upload_frame (GstD3D12Encoder * self, GstBuffer * buffer)
     auto dst_resource = gst_d3d12_memory_get_resource_handle (dmem);
     D3D12_BOX src_box[2];
 
-    auto desc = src_resource->GetDesc ();
+    auto desc = GetDesc (src_resource);
 
     UINT width = MIN ((UINT) desc.Width, priv->config.resolution.Width);
     UINT height = MIN ((UINT) desc.Height, priv->config.resolution.Height);
@@ -803,7 +801,7 @@ gst_d3d12_encoder_upload_frame (GstD3D12Encoder * self, GstBuffer * buffer)
       auto src_data = (guint8 *) GST_VIDEO_FRAME_PLANE_DATA (&src_frame, i);
       auto dst_data = (guint8 *) GST_VIDEO_FRAME_PLANE_DATA (&dst_frame, i);
 
-      for (guint j = 0; j < height; j++) {
+      for (gint j = 0; j < height; j++) {
         memcpy (dst_data, src_data, width_in_bytes);
         dst_data += dst_stride;
         src_data += src_stride;
@@ -872,7 +870,7 @@ gst_d3d12_encoder_build_command (GstD3D12Encoder * self,
           in_args->PictureControlDesc.ReferenceFrames.ppTexture2Ds[0];
       ref_pic->AddRef ();
       gst_d3d12_fence_data_add_notify_com (fence_data, ref_pic);
-      auto ref_pic_desc = ref_pic->GetDesc ();
+      auto ref_pic_desc = GetDesc (ref_pic);
 
       for (UINT i = 0;
           i < in_args->PictureControlDesc.ReferenceFrames.NumTexture2Ds; i++) {
@@ -915,7 +913,7 @@ gst_d3d12_encoder_build_command (GstD3D12Encoder * self,
               D3D12_RESOURCE_STATE_COMMON));
     } else {
       auto recon_pic_desc =
-          out_args->ReconstructedPicture.pReconstructedPicture->GetDesc ();
+          GetDesc (out_args->ReconstructedPicture.pReconstructedPicture);
       UINT mip_slice, plane_slice, array_slice;
 
       D3D12DecomposeSubresource (out_args->
